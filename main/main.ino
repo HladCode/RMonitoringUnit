@@ -1,29 +1,28 @@
 #include <math.h>
+
 #define DEBUG 1
 #define CHECK Serial.println("✓");
 #define DEFAULT_TIMEOUT 2000
+#define RED_NAME "Obj1" // RED - Refrigeration Exporter of Data
 
-//typedef int16_t ia; // adc in integer
+const int thermistor_output1 = A0;
+const int reset_pin = 6;
 
-//const int DanfossAK32R_Pin = A1;
-const int thermistor_output = A0;
-
-//ia U0, U100, P100;
-
-void sendData(const String& command, const int timeout = DEFAULT_TIMEOUT);
+void arduinoReset();
+void sendData(const String& command, const int timeout = DEFAULT_TIMEOUT, void(*funcIfNotOk)() = arduinoReset);
 String getData(const String& command, const int timeout = DEFAULT_TIMEOUT);
+void sendTempreature(float tempreature, String termistorpPath);
 float TempreatureFromAdc(const int16_t& thermistor_adc_val);
+bool findOk(const String& txt);
+void plug() {}
 
-// inline double barFromAdc(const int16_t& adc) {
-//   return (double(adc)-U0)/(U100-U0)*P100; 
-// }
+
 
 void setup() {
   Serial.begin(9600);
   Serial1.begin(9600);
   while(!Serial);
   while(!Serial1);
-
 
   //Power on the SIM800C
   pinMode(9,OUTPUT);
@@ -43,14 +42,14 @@ void setup() {
   Serial.println("\n");
 
   Serial.println("Sim-card setup... ");    
-  sendData("AT+CSQ"); // Перевірка рівня сигналу
-  sendData("AT+CREG?"); // Перевірка реєстрації в мережі
-  sendData("AT+CSTT=\"internet.kyivstar.net\",\"\",\"\""); // Встановлення APN
-  sendData("AT+CIICR"); // Підняття бездротового з'єднання
-  sendData("AT+SAPBR=3,1,\"Contype\",\"GPRS\""); // Встановлення параметрів профілю носія
-  sendData("AT+SAPBR=3,1,\"APN\",\"internet.kyivstar.net\""); // Встановлення APN
-  sendData("AT+SAPBR=1,1"); // Відкриття профілю носія
-  sendData("AT+SAPBR=2,1"); // Перевірка статусу профілю носія
+  sendData("AT+CSQ"); // checking signal level
+  sendData("AT+CREG?"); // checking web registration 
+  sendData("AT+CSTT=\"internet.kyivstar.net\",\"\",\"\""); // installing APN
+  sendData("AT+CIICR"); // Raising a wireless connection
+  sendData("AT+SAPBR=3,1,\"Contype\",\"GPRS\""); // Setting media profile parameters
+  sendData("AT+SAPBR=3,1,\"APN\",\"internet.kyivstar.net\""); // installing APN
+  sendData("AT+SAPBR=1,1"); // Opening the carrier profile
+  sendData("AT+SAPBR=2,1"); // Checking the carrier profile status
   Serial.println("\n");
 
   Serial.println("HTTP initialization... ");    
@@ -59,43 +58,30 @@ void setup() {
 
   Serial.println("HTTP parameters setting... ");  
   sendData("AT+HTTPPARA=\"CID\", 1");
-  sendData("AT+HTTPPARA=\"URL\", \"http://91.244.23.42:1488/data\"");
+  sendData("AT+HTTPPARA=\"URL\", \"http://92.43.81.152:1488/data\"");
   sendData("AT+HTTPPARA=\"CONTENT\", \"application/json\"");
   sendData("AT+HTTPPARA?");
 
   Serial.println("\n");
   Serial.println(" -- Data transfer start -- ");  
 
-  pinMode(thermistor_output, INPUT);
-//  U0 = 162, U100 = 1012, P100 = 14;  // в дальнейшем эти значения может задавать сервер или считывание из файла из-за разости параметров сенсоров
-
-  
-
+  pinMode(thermistor_output1, INPUT);  
 }
   
 void loop() {
-  //ia DanfossAK32R_Output = analogRead(DanfossAK32R_Pin);
-  float thermistor_Output = TempreatureFromAdc(analogRead(thermistor_output));
-  String jsonData = "{\"t\":\"" + String(thermistor_Output) + "\", \"p\":\"Ukraine/Cherkassy/CityMarket/Address/R2\"}";
-  //Serial.println("\n"+ jsonData.length() +"\n");
-  sendData("AT+HTTPDATA="+ String(jsonData.length())+",10000");
-  delay(100);
-  Serial1.print(jsonData);
-  delay(100);
-  Serial1.write(26); // ASCII код Ctrl+Z
-  delay(100);
-  sendData("AT+HTTPACTION=1");
-  delay(1000);
-  
-  String response = getData("AT+HTTPREAD");
-  Serial.println(response);
-  delay(1000);
+  float tempreature1 = TempreatureFromAdc(analogRead(thermistor_output1));
+  sendTempreature(tempreature1, "thermistor1");
 
-  //Serial.print("Temperature: " + String(TempreatureFromAdc(thermistor_Output), 4)+"\n\n\n");
+  // for example
+  // 
+  // delay(200);
+  // float tempreature2 = TempreatureFromAdc(analogRead(thermistor_output2));
+  // sendTempreature(tempreature2, "thermistor2");
 
+  delay(1000);
 }
 
-void sendData(const String& command, const int timeout = DEFAULT_TIMEOUT) { //Send command function
+void sendData(const String& command, const int timeout = DEFAULT_TIMEOUT, void(*funcIfNotOk)() = arduinoReset) { //Send command function
     String response = ""; 
     Serial1.println(command); 
     long int time = millis();
@@ -108,6 +94,12 @@ void sendData(const String& command, const int timeout = DEFAULT_TIMEOUT) { //Se
       Serial.println();
       Serial.print(response);
       CHECK
+
+      if(!findOk(response)) {
+        Serial.println("Start reseting... \n");
+        funcIfNotOk();
+      }
+
       Serial.println();
     }  
 }
@@ -131,6 +123,22 @@ String getData(const String& command, const int timeout = DEFAULT_TIMEOUT) {
     return response;
 }
 
+void sendTempreature(float tempreature, String termistorpPath) {
+  String jsonData = "{\"t\":\"" + String(tempreature) + "\", \"p\":\"" + RED_NAME + "/" + termistorpPath +"\"}";
+
+  sendData("AT+HTTPDATA="+ String(jsonData.length())+",10000");
+  delay(100);
+  Serial1.print(jsonData);
+  delay(100);
+  Serial1.write(26); // Ctrl+Z in ASCII
+  delay(100);
+  sendData("AT+HTTPACTION=1", DEFAULT_TIMEOUT, plug);
+  delay(1000);
+  
+  String response = getData("AT+HTTPREAD");
+  Serial.println(response);
+}
+
 float TempreatureFromAdc(const int16_t& thermistor_adc_val) {
   float output_voltage, thermistor_resistance, therm_res_ln, temperature;  
   
@@ -141,3 +149,29 @@ float TempreatureFromAdc(const int16_t& thermistor_adc_val) {
   temperature = ( 1 / ( 0.001129148 + ( 0.000234125 * therm_res_ln ) + ( 0.0000000876741 * therm_res_ln * therm_res_ln * therm_res_ln ) ) ); /* Temperature in Kelvin */
   return temperature - 273.15; /* Temperature in degree Celsius */
 }
+
+bool findOk(const String& txt) {
+  for(int i = 0; i+1 < txt.length(); ++i) {
+    if (txt.substring(i, i+2) == "OK") {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+void arduinoReset() {
+  pinMode(reset_pin, OUTPUT);
+  digitalWrite(reset_pin, LOW);
+  delay(100);  
+  digitalWrite(reset_pin, HIGH);  
+}
+
+//const int DanfossAK32R_Pin = A1;
+//typedef int16_t ia; // adc in integer
+//ia U0, U100, P100;
+// inline double barFromAdc(const int16_t& adc) {
+//   return (double(adc)-U0)/(U100-U0)*P100; 
+// }
+//  U0 = 162, U100 = 1012, P100 = 14;  // preassure param. that depends on special sensors.
+  //ia DanfossAK32R_Output = analogRead(DanfossAK32R_Pin);
