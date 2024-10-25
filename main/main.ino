@@ -1,4 +1,5 @@
 #include <math.h>
+#include <DoubleLinkedList.h>
 
 #define DEBUG 1
 #define CHECK Serial.println("✓");
@@ -11,7 +12,7 @@ const int reset_pin = 6;
 void arduinoReset();
 void sendData(const String& command, const int timeout = DEFAULT_TIMEOUT, void(*funcIfNotOk)() = arduinoReset);
 String getData(const String& command, const int timeout = DEFAULT_TIMEOUT);
-void sendTempreature(float tempreature, String termistorpPath);
+void sendTempreature(const String& targetURL, float tempreature, String termistorpPath);
 float TempreatureFromAdc(const int16_t& thermistor_adc_val);
 bool findOk(const String& txt);
 void plug() {}
@@ -52,13 +53,20 @@ void setup() {
   sendData("AT+SAPBR=2,1"); // Checking the carrier profile status
   Serial.println("\n");
 
+  // Serial.println("Enabling server settings... ");    
+  // Serial1.println("AT+CIPMUX=1");            // Включаем мультиканальный режим
+  // delay(1000);
+  // Serial1.println("AT+CIPSERVER=1,80");      // Открываем сервер на порту 80
+  // delay(1000);
+
+
   Serial.println("HTTP initialization... ");    
   sendData("AT+HTTPINIT");
   Serial.println("\n");
 
   Serial.println("HTTP parameters setting... ");  
   sendData("AT+HTTPPARA=\"CID\", 1");
-  sendData("AT+HTTPPARA=\"URL\", \"http://92.43.81.152:1488/data\"");
+  //sendData("AT+HTTPPARA=\"URL\", \"http://92.43.81.152:1488/data\"");
   sendData("AT+HTTPPARA=\"CONTENT\", \"application/json\"");
   sendData("AT+HTTPPARA?");
 
@@ -69,39 +77,40 @@ void setup() {
 }
   
 void loop() {
-  float tempreature1 = TempreatureFromAdc(analogRead(thermistor_output1));
-  sendTempreature(tempreature1, "thermistor1");
-
-  // for example
-  // 
-  // delay(200);
-  // float tempreature2 = TempreatureFromAdc(analogRead(thermistor_output2));
-  // sendTempreature(tempreature2, "thermistor2");
-
-  delay(1000);
+  if (Serial1.available()) {
+        String message = Serial1.readString();
+        if (message.indexOf("+CMT:") != -1) {
+            // Извлечение текста SMS
+            int index = message.indexOf("\r\n") + 2;
+            String command = message.substring(index);
+            Serial.println(message)
+            Serial.println(command)
+        }
+    }
 }
 
 void sendData(const String& command, const int timeout = DEFAULT_TIMEOUT, void(*funcIfNotOk)() = arduinoReset) { //Send command function
-    String response = ""; 
-    Serial1.println(command); 
-    long int time = millis();
-    while( (time+timeout) > millis()){
-      while(Serial1.available()){       
-        response += (char)Serial1.read(); 
-      }  
-    }    
-    if(DEBUG){
-      Serial.println();
-      Serial.print(response);
-      CHECK
 
-      if(!findOk(response)) {
-        Serial.println("Start reseting... \n");
-        funcIfNotOk();
-      }
-
-      Serial.println();
+  String response = ""; 
+  Serial1.println(command); 
+  long int time = millis();
+  while( (time+timeout) > millis()){
+    while(Serial1.available()){       
+      response += (char)Serial1.read(); 
     }  
+  }    
+  if(DEBUG){
+    Serial.println();
+    Serial.print(response);
+    CHECK
+
+    if(!findOk(response)) {
+      Serial.println("Start reseting... \n");
+      funcIfNotOk();
+    }
+
+    Serial.println();
+  }  
 }
 
 String getData(const String& command, const int timeout = DEFAULT_TIMEOUT) {
@@ -123,7 +132,8 @@ String getData(const String& command, const int timeout = DEFAULT_TIMEOUT) {
     return response;
 }
 
-void sendTempreature(float tempreature, String termistorpPath) {
+void sendTempreature(const String& targetURL, float tempreature, String termistorpPath) {
+  sendData("AT+HTTPPARA=\"URL\", \""+targetURL+"\"");
   String jsonData = "{\"t\":\"" + String(tempreature) + "\", \"p\":\"" + RED_NAME + "/" + termistorpPath +"\"}";
 
   sendData("AT+HTTPDATA="+ String(jsonData.length())+",10000");
