@@ -4,10 +4,12 @@
 #include <SoftwareWire.h>
 #include <SPI.h>
 #include <SD.h>
+#include <Regexp.h>
 
 #define CHECK Serial.println("✓");
 #define DEFAULT_TIMEOUT 2000
 #define RED_NAME "Obj1" // RED - Refrigeration Exporter of Data
+#define MAX_PARTS 10 // Adjust this based on the maximum expected split parts
 
 const int thermistor_output1 = A0;
 const int reset_pin = 11; // with multiplexer is A3
@@ -51,12 +53,15 @@ uint8_t bcdToDec(uint8_t val);
 uint8_t decToBcd(uint8_t val);
 void setRTC(const MyDateTime &dt);
 MyDateTime getRTC();
+int split(String data, char delimiter, String result[]);
+void SetupRTC();
 
 void printLCD(const String& txt, const String& txt2 = "");
 
 bool isURLOK = 0;
 bool isRTCOK = 0;
 
+String URL = "";
 
 void setup() {
 #ifdef DEBUG
@@ -132,28 +137,18 @@ void setup() {
 
   if(SD.exists("url.txt")) {
     myFile = SD.open("url.txt", FILE_READ);
-    String url;
+    String bufUrl;
     while (myFile.available()) {
-      url += myFile.read();
+      bufUrl += myFile.read();
     }
-    sendData("AT+HTTPPARA=\"URL\", \""+url+"\"");
+    URL = bufUrl;
+    //sendData("AT+HTTPPARA=\"URL\", \""+url+"\"");
     printLCD("URL OK");
     isURLOK = 1;
     myFile.close();
   }
 
-  if(getRTC().year < 2025){
-    printLCD("RTC BAD");
-    if(isURLOK){
-      // TODO: request on server for time init
-      setRTC(MyDateTime(2025, 1, 11, 13, 45, 33));
-      printLCD("RTC OK");
-      isRTCOK = 1;
-    }
-  } else{
-    printLCD("RTC OK");
-    isRTCOK = 1;
-  }
+  SetupRTC();
   
   if(isURLOK){
     printLCD("Data transfering", "started");  
@@ -173,11 +168,15 @@ void loop() {
         // Извлечение текста SMS
         int index = message.indexOf("\r\n") + 2; // Найти начало текста SMS
         String command = message.substring(index); // Извлечь текст сообщения
+
         // TODO: сделать проверку с помощью регуляторных выражений
         // на наличие адреса на сервер. В случае положительной проверки
         // настроить url для SIM800C, записать этот url в url.txt,
         // поставить значение isURLOK = 1, а также настроить RTC
         // после чего поставить занчение isRTCOK = 1
+
+        // TODO: сделать специальный 9и значный id устройства в файле на SD карте, по которому будут обращаться  
+        // к устройству по SMS, чтоб другие люди, узнав номер телефона устройства, не смогли поменять url
     }
   }
   if(isURLOK){
@@ -241,8 +240,9 @@ String getData(const String& command, const int timeout = DEFAULT_TIMEOUT) {
     return response;
 }
 
-void sendTempreature(const String& targetURL, float tempreature, String termistorpPath) {
-  sendData("AT+HTTPPARA=\"URL\", \""+targetURL+"\"");
+//TODO: slightly remake this function for server purpose
+void sendTempreature(float tempreature, String termistorpPath) {
+  sendData("AT+HTTPPARA=\"URL\", \""+URL+"\"");
   String jsonData = "{\"t\":\"" + String(tempreature) + "\", \"p\":\"" + RED_NAME + "/" + termistorpPath +"\"}";
 
   sendData("AT+HTTPDATA="+ String(jsonData.length())+",10000");
@@ -255,7 +255,9 @@ void sendTempreature(const String& targetURL, float tempreature, String termisto
   delay(1000);
   
   String response = getData("AT+HTTPREAD");
+#ifdef DEBUG
   Serial.println(response);
+#endif
 }
 
 float TempreatureFromAdc(const int16_t& thermistor_adc_val) {
@@ -338,6 +340,85 @@ void printLCD(const String& txt, const String& txt2 = "") {
   lcd.setCursor(0, 0);
 }
 
+int split(String data, char delimiter, String result[]) {
+  int count = 0;
+
+  while (data.length() > 0) {
+    int index = data.indexOf(delimiter);
+    if (index == -1) {
+      // No more delimiters, add the last part
+      result[count++] = data;
+      break;
+    }
+
+    // Add the substring to the result array
+    result[count++] = data.substring(0, index);
+
+    // Remove the processed part
+    data = data.substring(index + 1);
+
+    // Prevent overflow
+    if (count >= MAX_PARTS) {
+      break;
+    }
+  }
+
+  return count; // Return the number of parts
+}
+
+void SetupRTC() {
+  if(getRTC().year < 2025){
+    printLCD("RTC BAD");
+    if(isURLOK){
+      sendData("AT+HTTPPARA=\"URL\", \""+URL+"/time\"");
+      // String jsonData = "{\"t\":\"" + String(tempreature) + "\", \"p\":\"" + RED_NAME + "/" + termistorpPath +"\"}";
+      // sendData("AT+HTTPDATA="+ String(jsonData.length())+",10000");
+      // delay(100);
+      // Serial1.print(jsonData);
+      delay(100);
+      Serial1.write(26); // Ctrl+Z in ASCII
+      delay(100);
+      sendData("AT+HTTPACTION=0", DEFAULT_TIMEOUT, plug);
+      delay(1000);
+      String response = getData("AT+HTTPREAD");
+
+      // checking dateTime
+      const char* pattern = "^(%d%d%d%d) (%d%d) (%d%d) (%d%d) (%d%d) (%d%d)$";
+      MatchState ms;
+      ms.Target(response.c_str());
+      if (ms.Match((char*)pattern) != REGEXP_MATCHED) {
+        printLCD("BAD URL or SD", "Reseting..");
+        delay(5000);
+        arduinoReset();
+      } 
+
+      //spliting
+      int dt[6];
+      String buf = "";
+      for (int i = 0, j=0; i < response.length(); ++i) {
+        if (response[i] == " ") {
+          if(i == (response.length()-1)){
+            buf += response[i];
+            dt[j] = buf.toInt();
+            break;
+          }
+          dt[j] = buf.toInt();
+          buf = "";
+          ++j;
+        }
+        buf += response[i];
+      } 
+
+      // Setting RTC
+      setRTC(MyDateTime(dt[0], dt[1], dt[2], dt[3], dt[4], dt[5]));
+      printLCD("RTC OK");
+      isRTCOK = 1;
+    }
+  } else{
+    printLCD("RTC OK");
+    isRTCOK = 1;
+  }
+}
 
 //const int DanfossAK32R_Pin = A1;
 //typedef int16_t ia; // adc in integer
