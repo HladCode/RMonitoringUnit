@@ -26,6 +26,7 @@ Sd2Card card;
 SdVolume volume;
 SdFile root;
 File myFile;
+MatchState ms; // regexp
 
 struct MyDateTime {
   uint16_t year;
@@ -62,6 +63,7 @@ bool isURLOK = 0;
 bool isRTCOK = 0;
 
 String URL = "";
+String ID = "";
 
 void setup() {
 #ifdef DEBUG
@@ -114,7 +116,7 @@ void setup() {
 
   printLCD("Initializing", "SD card..");
   if (!card.init(SPI_HALF_SPEED, chipSelect_pin)) {
-    printLCD("SD module BAD", "Reseting...");
+    printLCD("SD module BAD", "Resetting...");
     delay(5000);
     arduinoReset();
   } else {
@@ -137,18 +139,36 @@ void setup() {
 
   if(SD.exists("url.txt")) {
     myFile = SD.open("url.txt", FILE_READ);
-    String bufUrl;
     while (myFile.available()) {
-      bufUrl += myFile.read();
+      URL += myFile.read();
     }
-    URL = bufUrl;
     //sendData("AT+HTTPPARA=\"URL\", \""+url+"\"");
     printLCD("URL OK");
     isURLOK = 1;
     myFile.close();
   }
 
-  SetupRTC();
+  if(SD.exists("id.txt")) {
+    myFile = SD.open("id.txt", FILE_READ);
+    while (myFile.available()) {
+      ID += myFile.read();
+    }
+    printLCD("ID OK");
+    myFile.close();
+  } else {
+    printLCD("id.txt BAD", "Resetting..");
+    delay(5000);
+    arduinoReset();
+  }
+
+  
+  if(getRTC().year < 2025){
+    printLCD("RTC BAD");
+    SetupRTC();
+  } else{
+    printLCD("RTC OK");
+    isRTCOK = 1;
+  }
   
   if(isURLOK){
     printLCD("Data transfering", "started");  
@@ -165,18 +185,26 @@ void loop() {
 
     // Проверка на наличие заголовка SMS
     if (message.indexOf("+CMT:") != -1) {
-        // Извлечение текста SMS
-        int index = message.indexOf("\r\n") + 2; // Найти начало текста SMS
-        String command = message.substring(index); // Извлечь текст сообщения
+      // Извлечение текста SMS
+      int index = message.indexOf("\r\n") + 2; // Найти начало текста SMS
+      String command = message.substring(index); // Извлечь текст сообщения
 
-        // TODO: сделать проверку с помощью регуляторных выражений
-        // на наличие адреса на сервер. В случае положительной проверки
-        // настроить url для SIM800C, записать этот url в url.txt,
-        // поставить значение isURLOK = 1, а также настроить RTC
-        // после чего поставить занчение isRTCOK = 1
+      // changing url
+      const char* pattern = "^id:(%w%w%w%w%w%w%w%w%w%w);url:https?://.*$";
+      ms.Target(command.c_str());
+      if (ms.Match((char*)pattern) == REGEXP_MATCHED) {
+        URL="http";
+        int i = 10+7+4+1; // 10 - id, 7 - id:;url:, 4 - http, 1 - possible s
+        for(;i<command.length();++i){
+          URL += command[i];
+        }
+        printLCD("URL OK");
+        isURLOK = 1;
 
-        // TODO: сделать специальный 9и значный id устройства в файле на SD карте, по которому будут обращаться  
-        // к устройству по SMS, чтоб другие люди, узнав номер телефона устройства, не смогли поменять url
+        if(getRTC().year < 2025){
+          SetupRTC();
+        }
+      }
     }
   }
   if(isURLOK){
@@ -200,7 +228,7 @@ void sendData(const String& command, const int timeout = DEFAULT_TIMEOUT, void(*
       lcd.print("BAD");
       if(funcIfNotOk == arduinoReset){
         lcd.setCursor(0, 1);
-        lcd.print("Reseting...");
+        lcd.print("Resetting...");
         lcd.setCursor(0, 0);
         delay(5000);  
       }
@@ -213,7 +241,7 @@ void sendData(const String& command, const int timeout = DEFAULT_TIMEOUT, void(*
     CHECK
 
     if(!findOk(response)) {
-      Serial.println("Start reseting... \n");
+      Serial.println("Start Resetting... \n");
       funcIfNotOk();
     }
 
@@ -367,54 +395,47 @@ int split(String data, char delimiter, String result[]) {
 }
 
 void SetupRTC() {
-  if(getRTC().year < 2025){
-    printLCD("RTC BAD");
-    if(isURLOK){
-      sendData("AT+HTTPPARA=\"URL\", \""+URL+"/time\"");
-      // String jsonData = "{\"t\":\"" + String(tempreature) + "\", \"p\":\"" + RED_NAME + "/" + termistorpPath +"\"}";
-      // sendData("AT+HTTPDATA="+ String(jsonData.length())+",10000");
-      // delay(100);
-      // Serial1.print(jsonData);
-      delay(100);
-      Serial1.write(26); // Ctrl+Z in ASCII
-      delay(100);
-      sendData("AT+HTTPACTION=0", DEFAULT_TIMEOUT, plug);
-      delay(1000);
-      String response = getData("AT+HTTPREAD");
+  if(isURLOK){
+    sendData("AT+HTTPPARA=\"URL\", \""+URL+"/time\"");
+    // String jsonData = "{\"t\":\"" + String(tempreature) + "\", \"p\":\"" + RED_NAME + "/" + termistorpPath +"\"}";
+    // sendData("AT+HTTPDATA="+ String(jsonData.length())+",10000");
+    // delay(100);
+    // Serial1.print(jsonData);
+    delay(100);
+    Serial1.write(26); // Ctrl+Z in ASCII
+    delay(100);
+    sendData("AT+HTTPACTION=0", DEFAULT_TIMEOUT, plug);
+    delay(1000);
+    String response = getData("AT+HTTPREAD");
 
-      // checking dateTime
-      const char* pattern = "^(%d%d%d%d) (%d%d) (%d%d) (%d%d) (%d%d) (%d%d)$";
-      MatchState ms;
-      ms.Target(response.c_str());
-      if (ms.Match((char*)pattern) != REGEXP_MATCHED) {
-        printLCD("BAD URL or SD", "Reseting..");
-        delay(5000);
-        arduinoReset();
-      } 
+    // checking dateTime
+    const char* pattern = "^(%d%d%d%d) (%d%d) (%d%d) (%d%d) (%d%d) (%d%d)$";
+    ms.Target(response.c_str());
+    if (ms.Match((char*)pattern) != REGEXP_MATCHED) {
+      printLCD("BAD URL or SD", "Resetting..");
+      delay(5000);
+      arduinoReset();
+    } 
 
-      //spliting
-      int dt[6];
-      String buf = "";
-      for (int i = 0, j=0; i < response.length(); ++i) {
-        if (response[i] == " ") {
-          if(i == (response.length()-1)){
-            buf += response[i];
-            dt[j] = buf.toInt();
-            break;
-          }
+    //spliting
+    int dt[6];
+    String buf = "";
+    for (int i = 0, j=0; i < response.length(); ++i) {
+      if (response[i] == " ") {
+        if(i == (response.length()-1)){
+          buf += response[i];
           dt[j] = buf.toInt();
-          buf = "";
-          ++j;
+          break;
         }
-        buf += response[i];
-      } 
+        dt[j] = buf.toInt();
+        buf = "";
+        ++j;
+      }
+      buf += response[i];
+    } 
 
-      // Setting RTC
-      setRTC(MyDateTime(dt[0], dt[1], dt[2], dt[3], dt[4], dt[5]));
-      printLCD("RTC OK");
-      isRTCOK = 1;
-    }
-  } else{
+    // Setting RTC
+    setRTC(MyDateTime(dt[0], dt[1], dt[2], dt[3], dt[4], dt[5]));
     printLCD("RTC OK");
     isRTCOK = 1;
   }
