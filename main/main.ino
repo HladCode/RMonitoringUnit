@@ -1,5 +1,3 @@
-#include <math.h>
-#include <DoubleLinkedList.h>
 #include <LiquidCrystal_SoftI2C.h>
 #include <SoftwareWire.h>
 #include <SPI.h>
@@ -8,25 +6,23 @@
 
 #define CHECK Serial.println("✓");
 #define DEFAULT_TIMEOUT 2000
-#define RED_NAME "Obj1" // RED - Refrigeration Exporter of Data
-#define MAX_PARTS 10 // Adjust this based on the maximum expected split parts
 
-const int thermistor_output1 = A0;
-const int reset_pin = 11; // with multiplexer is A3
-const int chipSelect_pin = 10;
-const int SDA_pin = 6;
-const int SCL_pin = 7;
+#define thermistor_output1 A0
+//const uint8_t reset_pin = 11; // with multiplexer is A3
+#define chipSelect_pin 10
+#define SDA_pin 6
+#define SCL_pin 7
 
-const uint8_t RTC_ADDRESS = 0x68;
-const uint8_t LCD_ADDRESS = 0x27;
+#define RTC_ADDRESS 0x68
+#define LCD_ADDRESS 0x27
 
 SoftwareWire myWire(SDA_pin, SCL_pin);
 LiquidCrystal_I2C lcd(LCD_ADDRESS,16,2, &myWire);
 Sd2Card card;
-SdVolume volume;
-SdFile root;
-File myFile;
-MatchState ms; // regexp
+// SdVolume volume;
+// SdFile root;
+
+ // regexp
 
 struct MyDateTime {
   uint16_t year;
@@ -44,7 +40,7 @@ void arduinoReset();
 void sendData(const String& command, const int timeout = DEFAULT_TIMEOUT, void(*funcIfNotOk)() = arduinoReset);
 String getData(const String& command, const int timeout = DEFAULT_TIMEOUT);
 
-void sendTempreature(const String& targetURL, float tempreature, String termistorpPath);
+void sendFloatToServer(float valueToSend, MyDateTime dt, String SensorPinNumber, String Purpose);
 float TempreatureFromAdc(const int16_t& thermistor_adc_val);
 
 bool findOk(const String& txt);
@@ -52,9 +48,9 @@ void plug() {}
 
 uint8_t bcdToDec(uint8_t val);
 uint8_t decToBcd(uint8_t val);
+
 void setRTC(const MyDateTime &dt);
 MyDateTime getRTC();
-int split(String data, char delimiter, String result[]);
 void SetupRTC();
 
 void printLCD(const String& txt, const String& txt2 = "");
@@ -63,13 +59,9 @@ bool isURLOK = 0;
 bool isRTCOK = 0;
 
 String URL = "";
-String ID = "";
+char ID[10];
 
 void setup() {
-#ifdef DEBUG
-  Serial.begin(9600);
-  while(!Serial);
-#endif
   myWire.begin();
   lcd.begin();                      
   lcd.backlight();
@@ -123,7 +115,7 @@ void setup() {
     printLCD("SD module OK");
   }
 
-  printLCD("HTTP", "initialization..");    
+  printLCD("HTTP", "initialization..");   
   sendData("AT+HTTPINIT");
   printLCD("AT+HTTPINIT OK");
 
@@ -137,35 +129,30 @@ void setup() {
   sendData("AT+HTTPPARA?");
   printLCD("AT+HTTPPARA? OK");
 
-  if(SD.exists("url.txt")) {
-    myFile = SD.open("url.txt", FILE_READ);
+  // TODO: вместо arduino reset будет просто while(1){}
+  if(SD.exists("Config.txt")) {
+    File myFile = SD.open("Config.txt", FILE_READ);
+    int i = 0;
+    while (i < 10) {
+      ID[i] = myFile.read();
+      ++i;
+    }
+    ++i;
     while (myFile.available()) {
       URL += myFile.read();
     }
-    //sendData("AT+HTTPPARA=\"URL\", \""+url+"\"");
-    printLCD("URL OK");
     isURLOK = 1;
-    myFile.close();
-  }
-
-  if(SD.exists("id.txt")) {
-    myFile = SD.open("id.txt", FILE_READ);
-    while (myFile.available()) {
-      ID += myFile.read();
-    }
-    printLCD("ID OK");
+    printLCD("Config OK");
     myFile.close();
   } else {
-    printLCD("id.txt BAD", "Resetting..");
-    delay(5000);
-    arduinoReset();
+    printLCD("Config.txt BAD", "RAAF"); // Reset after adding file
+    while(1){}
   }
 
-  
   if(getRTC().year < 2025){
     printLCD("RTC BAD");
     SetupRTC();
-  } else{
+  } else {
     printLCD("RTC OK");
     isRTCOK = 1;
   }
@@ -176,7 +163,7 @@ void setup() {
     printLCD("Waiting URL via","SMS (user app)");  
   }
 
-  pinMode(thermistor_output1, INPUT);  
+  //pinMode(thermistor_output1, INPUT); для аналога не требуеться 
 }
   
 void loop() {
@@ -191,10 +178,11 @@ void loop() {
 
       // changing url
       const char* pattern = "^id:(%w%w%w%w%w%w%w%w%w%w);url:https?://.*$";
+      MatchState ms;
       ms.Target(command.c_str());
       if (ms.Match((char*)pattern) == REGEXP_MATCHED) {
         URL="http";
-        int i = 10+7+4+1; // 10 - id, 7 - id:;url:, 4 - http, 1 - possible s
+        uint8_t i = 10+7+4+1; // 10 - id, 7 - id:;url:, 4 - http, 1 - possible s
         for(;i<command.length();++i){
           URL += command[i];
         }
@@ -208,13 +196,19 @@ void loop() {
     }
   }
   if(isURLOK){
-    // сделать трансферинг данных с датчиков на сервер/SD-карту 
-    // с (возможно "красивыми") часовыми метками 
+    MyDateTime dt = getRTC();
+    String dataPath = "t(C)/0/"+String(dt.year)+"/"+String(dt.month)+"/"+String(dt.day);
+    sendFloatToServer(TempreatureFromAdc(analogRead(thermistor_output1)), dt, "0", "t(C)");
+    if(!SD.exists(dataPath+"/data.txt")){
+      SD.mkdir(dataPath);
+    }
+    File d1 = SD.open(dataPath+"/data.txt", FILE_WRITE);
+    d1.println(String(dt.hour)+":"+String(dt.minute)+":"+String(dt.second)+" "+String(TempreatureFromAdc(analogRead(thermistor_output1))));
+    d1.close();
   }
 }
 
 void sendData(const String& command, const int timeout = DEFAULT_TIMEOUT, void(*funcIfNotOk)() = arduinoReset) { //Send command function
-
   String response = ""; 
   Serial1.println(command); 
   long int time = millis();
@@ -225,7 +219,7 @@ void sendData(const String& command, const int timeout = DEFAULT_TIMEOUT, void(*
   }
   if(!findOk(response)) {
       lcd.clear();
-      lcd.print("BAD");
+      lcd.print(command);
       if(funcIfNotOk == arduinoReset){
         lcd.setCursor(0, 1);
         lcd.print("Resetting...");
@@ -235,18 +229,18 @@ void sendData(const String& command, const int timeout = DEFAULT_TIMEOUT, void(*
       funcIfNotOk();
   }
 
-  #ifdef DEBUG
-    Serial.println();
-    Serial.print(response);
-    CHECK
+  // #ifdef DEBUG
+  //   Serial.println();
+  //   Serial.print(response);
+  //   CHECK
 
-    if(!findOk(response)) {
-      Serial.println("Start Resetting... \n");
-      funcIfNotOk();
-    }
+  //   if(!findOk(response)) {
+  //     Serial.println("Start Resetting... \n");
+  //     funcIfNotOk();
+  //   }
 
-    Serial.println();
-  #endif
+  //   Serial.println();
+  // #endif
 }
 
 String getData(const String& command, const int timeout = DEFAULT_TIMEOUT) {
@@ -258,20 +252,23 @@ String getData(const String& command, const int timeout = DEFAULT_TIMEOUT) {
         response += (char)Serial1.read(); 
       }  
     }    
-    #ifdef DEBUG
-      Serial.println();
-      Serial.print(response);
-      CHECK
-      Serial.println();
-    #endif
+    // #ifdef DEBUG
+    //   Serial.println();
+    //   Serial.print(response);
+    //   CHECK
+    //   Serial.println();
+    // #endif
 
     return response;
 }
 
-//TODO: slightly remake this function for server purpose
-void sendTempreature(float tempreature, String termistorpPath) {
-  sendData("AT+HTTPPARA=\"URL\", \""+URL+"\"");
-  String jsonData = "{\"t\":\"" + String(tempreature) + "\", \"p\":\"" + RED_NAME + "/" + termistorpPath +"\"}";
+void sendFloatToServer(float valueToSend, MyDateTime dt, String SensorPinNumber, String Purpose) {
+  sendData("AT+HTTPPARA=\"URL\", \""+URL+"/data\"");
+  String jsonData = "{\"id\":\""+String(ID[0]+ID[1]+ID[2]+ID[3]+ID[4]+ID[5]+ID[6]+ID[7]+ID[8]+ID[9])+
+  "\", \"p\"" + Purpose + 
+  "\", n:"+SensorPinNumber+
+  ", t:\""+String(dt.year)+"/"+String(dt.month)+"/"+String(dt.day)+" "+String(dt.hour)+":"+String(dt.minute)+":"+String(dt.second)+
+  "\",v:"+String(valueToSend)+"}";
 
   sendData("AT+HTTPDATA="+ String(jsonData.length())+",10000");
   delay(100);
@@ -283,14 +280,13 @@ void sendTempreature(float tempreature, String termistorpPath) {
   delay(1000);
   
   String response = getData("AT+HTTPREAD");
-#ifdef DEBUG
-  Serial.println(response);
-#endif
+// #ifdef DEBUG
+//   Serial.println(response);
+// #endif
 }
 
 float TempreatureFromAdc(const int16_t& thermistor_adc_val) {
   float output_voltage, thermistor_resistance, therm_res_ln, temperature;  
-  
   output_voltage = ( (thermistor_adc_val * 5.0) / 1023.0 );
   thermistor_resistance = ( ( 5 * ( 10.0 / output_voltage ) ) - 10 ); /* Resistance in kilo ohms */
   thermistor_resistance = thermistor_resistance * 1000 ; /* Resistance in ohms   */
@@ -305,15 +301,15 @@ bool findOk(const String& txt) {
       return true;
     }
   }
-
   return false;
 }
 
 void arduinoReset() {
-  pinMode(reset_pin, OUTPUT);
-  digitalWrite(reset_pin, LOW);
-  delay(100);  
-  digitalWrite(reset_pin, HIGH);  
+  // pinMode(reset_pin, OUTPUT);
+  // digitalWrite(reset_pin, LOW);
+  // delay(100);  
+  // digitalWrite(reset_pin, HIGH);  
+  while(1){}
 }
 
 // Преобразование из двоично-десятичного формата в десятичный
@@ -368,32 +364,6 @@ void printLCD(const String& txt, const String& txt2 = "") {
   lcd.setCursor(0, 0);
 }
 
-int split(String data, char delimiter, String result[]) {
-  int count = 0;
-
-  while (data.length() > 0) {
-    int index = data.indexOf(delimiter);
-    if (index == -1) {
-      // No more delimiters, add the last part
-      result[count++] = data;
-      break;
-    }
-
-    // Add the substring to the result array
-    result[count++] = data.substring(0, index);
-
-    // Remove the processed part
-    data = data.substring(index + 1);
-
-    // Prevent overflow
-    if (count >= MAX_PARTS) {
-      break;
-    }
-  }
-
-  return count; // Return the number of parts
-}
-
 void SetupRTC() {
   if(isURLOK){
     sendData("AT+HTTPPARA=\"URL\", \""+URL+"/time\"");
@@ -410,6 +380,7 @@ void SetupRTC() {
 
     // checking dateTime
     const char* pattern = "^(%d%d%d%d) (%d%d) (%d%d) (%d%d) (%d%d) (%d%d)$";
+    MatchState ms;
     ms.Target(response.c_str());
     if (ms.Match((char*)pattern) != REGEXP_MATCHED) {
       printLCD("BAD URL or SD", "Resetting..");
@@ -418,7 +389,7 @@ void SetupRTC() {
     } 
 
     //spliting
-    int dt[6];
+    uint16_t dt[6];
     String buf = "";
     for (int i = 0, j=0; i < response.length(); ++i) {
       if (response[i] == " ") {
@@ -441,6 +412,31 @@ void SetupRTC() {
   }
 }
 
+// int split(String data, char delimiter, String result[]) {
+//   int count = 0;
+
+//   while (data.length() > 0) {
+//     int index = data.indexOf(delimiter);
+//     if (index == -1) {
+//       // No more delimiters, add the last part
+//       result[count++] = data;
+//       break;
+//     }
+
+//     // Add the substring to the result array
+//     result[count++] = data.substring(0, index);
+
+//     // Remove the processed part
+//     data = data.substring(index + 1);
+
+//     // Prevent overflow
+//     if (count >= MAX_PARTS) {
+//       break;
+//     }
+//   }
+
+//   return count; // Return the number of parts
+// }
 //const int DanfossAK32R_Pin = A1;
 //typedef int16_t ia; // adc in integer
 //ia U0, U100, P100;
