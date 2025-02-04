@@ -1,24 +1,32 @@
-#include <LiquidCrystal_SoftI2C.h>
-#include <SoftwareWire.h>
+#include <LiquidCrystal_I2C.h>
+#include "Wire.h"
+#include "FS.h"
 #include <SPI.h>
 #include <SD.h>
 #include <Regexp.h>
+#include "esp_system.h"
 
-#define CHECK Serial.println("✓");
-#define DEFAULT_TIMEOUT 2000
+#define DEFAULT_TIMEOUT 5000
+#define MODEM_RST             5
+#define MODEM_PWRKEY          4
+#define MODEM_POWER_ON       23
+#define LED_GPIO             13
+#define MODEM_TX 27
+#define MODEM_RX 26
+#define LED_ON               HIGH
+#define LED_OFF              LOW
 
 #define thermistor_output1 A0
-//const uint8_t reset_pin = 11; // with multiplexer is A3
-#define chipSelect_pin 10
-#define SDA_pin 6
-#define SCL_pin 7
+#define chipSelect_pin 5
+// #define SDA_pin 6
+ #define SCL_pin 22
 
 #define RTC_ADDRESS 0x68
 #define LCD_ADDRESS 0x27
 
-SoftwareWire myWire(SDA_pin, SCL_pin);
-LiquidCrystal_I2C lcd(LCD_ADDRESS,16,2, &myWire);
-Sd2Card card;
+// SoftwareWire Wire(SDA_pin, SCL_pin);
+LiquidCrystal_I2C lcd(LCD_ADDRESS,16,2);
+// Sd2Card card;
 // SdVolume volume;
 // SdFile root;
 
@@ -36,10 +44,10 @@ struct MyDateTime {
       : year(y), month(mo), day(d), hour(h), minute(mi), second(s) {}
 };
 
-void arduinoReset();
-void sendData(const String& command, const int timeout = DEFAULT_TIMEOUT, void(*funcIfNotOk)() = arduinoReset);
+void programReset();
+void sendData(const String& command, const int timeout = DEFAULT_TIMEOUT, void(*funcIfNotOk)() = programReset);
 String getData(const String& command, const int timeout = DEFAULT_TIMEOUT);
-
+void setupModem();
 void sendFloatToServer(float valueToSend, MyDateTime dt, String SensorPinNumber, String Purpose);
 float TempreatureFromAdc(const int16_t& thermistor_adc_val);
 
@@ -55,6 +63,10 @@ void SetupRTC();
 
 void printLCD(const String& txt, const String& txt2 = "");
 
+void createDir(fs::FS &fs, const char *path);
+bool writeFile(fs::FS &fs, const char *path, const char *message);
+bool appendFile(fs::FS &fs, const char *path, const char *message);
+
 bool isURLOK = 0;
 bool isRTCOK = 0;
 
@@ -62,29 +74,36 @@ String URL = "";
 char ID[10];
 
 void setup() {
-  myWire.begin();
-  lcd.begin();                      
+  lcd.init();                      
   lcd.backlight();
-  printLCD("LCD and wire OK");
-
-  Serial1.begin(9600);
-  while(!Serial1);
-  printLCD("Serial1 OK");  
+  printLCD("LCD and wire OK"); 
   
-  //Power on the SIM800C
-  pinMode(9,OUTPUT);
-  digitalWrite(9,HIGH);
-  delay(3000);
-  digitalWrite(9,LOW);
-  delay(1000);
-  printLCD("SIM800C OK");
+  //Power on the SIM800H
+  setupModem();
+  printLCD("SIM800H", "Powered");
 
   while(!Serial1.availableForWrite());
   printLCD("Serial1 is write", "available");
-
-  printLCD("AT commands", "initialization.. ");    
-  sendData("AT");
-  printLCD("AT OK");
+ 
+  printLCD("AT and Serial1", "initialization.. ");   
+  Serial1.begin(9600, SERIAL_8N1, MODEM_RX, MODEM_TX);
+  Serial1.println("AT");
+  delay(1000);
+  if (Serial1.available()) {
+      String response = Serial1.readString();
+      Serial.println(response);
+      if (response.indexOf("OK") >= 0) {
+          printLCD("Serial1&AT OK");
+          delay(3000);
+      } else {
+          printLCD("No OK response");
+          while(1){}
+      }
+  } else {
+      printLCD("No response");
+      while(1){}
+  }
+  printLCD("AT commands", "initialization.. ");   
 
   printLCD("Sim-card setup..");    
   sendData("AT+CSQ"); // checking signal level
@@ -107,10 +126,10 @@ void setup() {
   printLCD("SMS OK");
 
   printLCD("Initializing", "SD card..");
-  if (!card.init(SPI_HALF_SPEED, chipSelect_pin)) {
+  if (!SD.begin(chipSelect_pin)) {
     printLCD("SD module BAD", "Resetting...");
     delay(5000);
-    arduinoReset();
+    programReset();
   } else {
     printLCD("SD module OK");
   }
@@ -122,14 +141,12 @@ void setup() {
   printLCD("HTTP parameters", "setting...");  
   sendData("AT+HTTPPARA=\"CID\", 1");
   printLCD("CID OK");
-  // sendData("AT+HTTPPARA=\"URL\", \"http://92.43.81.152:1488/data\"");
-  // printLCD("URL OK");
   sendData("AT+HTTPPARA=\"CONTENT\", \"application/json\"");
   printLCD("CONTENT OK");
   sendData("AT+HTTPPARA?");
   printLCD("AT+HTTPPARA? OK");
-
-  // TODO: вместо arduino reset будет просто while(1){}
+  
+  //Example: 1234567890 http://www.example.com
   if(SD.exists("Config.txt")) {
     File myFile = SD.open("Config.txt", FILE_READ);
     int i = 0;
@@ -179,7 +196,8 @@ void loop() {
       // changing url
       const char* pattern = "^id:(%w%w%w%w%w%w%w%w%w%w);url:https?://.*$";
       MatchState ms;
-      ms.Target(command.c_str());
+      char* command_pchar = strdup(command.c_str());
+      ms.Target(command_pchar);
       if (ms.Match((char*)pattern) == REGEXP_MATCHED) {
         URL="http";
         uint8_t i = 10+7+4+1; // 10 - id, 7 - id:;url:, 4 - http, 1 - possible s
@@ -191,15 +209,24 @@ void loop() {
 
         if(getRTC().year < 2025){
           SetupRTC();
+          isRTCOK = 1;
         }
       }
     }
   }
-  if(isURLOK){
+
+  //TODO: write time on LCD here
+
+  if(isURLOK && isRTCOK){
     MyDateTime dt = getRTC();
     String dataPath = "t(C)/0/"+String(dt.year)+"/"+String(dt.month)+"/"+String(dt.day);
+
     sendFloatToServer(TempreatureFromAdc(analogRead(thermistor_output1)), dt, "0", "t(C)");
+
     if(!SD.exists(dataPath+"/data.txt")){
+      SD.mkdir("t(C)/0/");
+      SD.mkdir("t(C)/0/"+String(dt.year));
+      SD.mkdir("t(C)/0/"+String(dt.year)+"/"+String(dt.month));
       SD.mkdir(dataPath);
     }
     File d1 = SD.open(dataPath+"/data.txt", FILE_WRITE);
@@ -208,7 +235,7 @@ void loop() {
   }
 }
 
-void sendData(const String& command, const int timeout = DEFAULT_TIMEOUT, void(*funcIfNotOk)() = arduinoReset) { //Send command function
+void sendData(const String& command, const int timeout = DEFAULT_TIMEOUT, void(*funcIfNotOk)() = programReset) { //Send command function
   String response = ""; 
   Serial1.println(command); 
   long int time = millis();
@@ -220,7 +247,7 @@ void sendData(const String& command, const int timeout = DEFAULT_TIMEOUT, void(*
   if(!findOk(response)) {
       lcd.clear();
       lcd.print(command);
-      if(funcIfNotOk == arduinoReset){
+      if(funcIfNotOk == programReset){
         lcd.setCursor(0, 1);
         lcd.print("Resetting...");
         lcd.setCursor(0, 0);
@@ -229,18 +256,7 @@ void sendData(const String& command, const int timeout = DEFAULT_TIMEOUT, void(*
       funcIfNotOk();
   }
 
-  // #ifdef DEBUG
-  //   Serial.println();
-  //   Serial.print(response);
-  //   CHECK
 
-  //   if(!findOk(response)) {
-  //     Serial.println("Start Resetting... \n");
-  //     funcIfNotOk();
-  //   }
-
-  //   Serial.println();
-  // #endif
 }
 
 String getData(const String& command, const int timeout = DEFAULT_TIMEOUT) {
@@ -266,8 +282,8 @@ void sendFloatToServer(float valueToSend, MyDateTime dt, String SensorPinNumber,
   sendData("AT+HTTPPARA=\"URL\", \""+URL+"/data\"");
   String jsonData = "{\"id\":\""+String(ID[0]+ID[1]+ID[2]+ID[3]+ID[4]+ID[5]+ID[6]+ID[7]+ID[8]+ID[9])+
   "\", \"p\"" + Purpose + 
-  "\", n:"+SensorPinNumber+
-  ", t:\""+String(dt.year)+"/"+String(dt.month)+"/"+String(dt.day)+" "+String(dt.hour)+":"+String(dt.minute)+":"+String(dt.second)+
+  "\", n:\""+SensorPinNumber+
+  "\", t:\""+String(dt.year)+" "+String(dt.month)+" "+String(dt.day)+" "+String(dt.hour)+" "+String(dt.minute)+" "+String(dt.second)+
   "\",v:"+String(valueToSend)+"}";
 
   sendData("AT+HTTPDATA="+ String(jsonData.length())+",10000");
@@ -296,19 +312,12 @@ float TempreatureFromAdc(const int16_t& thermistor_adc_val) {
 }
 
 bool findOk(const String& txt) {
-  for(int i = 0; i+1 < txt.length(); ++i) {
-    if (txt.substring(i, i+2) == "OK") {
-      return true;
-    }
-  }
-  return false;
+  return txt.indexOf("OK") >= 0;
 }
 
-void arduinoReset() {
-  // pinMode(reset_pin, OUTPUT);
-  // digitalWrite(reset_pin, LOW);
-  // delay(100);  
-  // digitalWrite(reset_pin, HIGH);  
+void programReset() {
+  //TODO: check esp_reset_reason();
+  //TODO: here esp32 is 
   while(1){}
 }
 
@@ -324,32 +333,32 @@ uint8_t decToBcd(uint8_t val) {
 
 // Функция для записи времени в RTC
 void setRTC(const MyDateTime &dt) {
-  myWire.beginTransmission(RTC_ADDRESS);
-  myWire.write(0x00); // Указываем адрес регистра секунд
-  myWire.write(decToBcd(dt.second));
-  myWire.write(decToBcd(dt.minute));
-  myWire.write(decToBcd(dt.hour));
-  myWire.write(decToBcd(0)); // День недели (не используется)
-  myWire.write(decToBcd(dt.day));
-  myWire.write(decToBcd(dt.month));
-  myWire.write(decToBcd(dt.year - 2000));
-  myWire.endTransmission();
+  Wire.beginTransmission(RTC_ADDRESS);
+  Wire.write(0x00); // Указываем адрес регистра секунд
+  Wire.write(decToBcd(dt.second));
+  Wire.write(decToBcd(dt.minute));
+  Wire.write(decToBcd(dt.hour));
+  Wire.write(decToBcd(0)); // День недели (не используется)
+  Wire.write(decToBcd(dt.day));
+  Wire.write(decToBcd(dt.month));
+  Wire.write(decToBcd(dt.year - 2000));
+  Wire.endTransmission();
 }
 
 // Функция для чтения времени из RTC
 MyDateTime getRTC() {
-  myWire.beginTransmission(RTC_ADDRESS);
-  myWire.write(0x00); // Указываем адрес регистра секунд
-  myWire.endTransmission();
+  Wire.beginTransmission(RTC_ADDRESS);
+  Wire.write(0x00); // Указываем адрес регистра секунд
+  Wire.endTransmission();
 
-  myWire.requestFrom(RTC_ADDRESS, SCL_pin);
-  uint8_t second = bcdToDec(myWire.read() & 0x7F);
-  uint8_t minute = bcdToDec(myWire.read());
-  uint8_t hour = bcdToDec(myWire.read());
-  myWire.read(); // Пропускаем день недели
-  uint8_t day = bcdToDec(myWire.read());
-  uint8_t month = bcdToDec(myWire.read());
-  uint16_t year = 2000 + bcdToDec(myWire.read());
+  Wire.requestFrom(RTC_ADDRESS, SCL_pin);
+  uint8_t second = bcdToDec(Wire.read() & 0x7F);
+  uint8_t minute = bcdToDec(Wire.read());
+  uint8_t hour = bcdToDec(Wire.read());
+  Wire.read(); // Пропускаем день недели
+  uint8_t day = bcdToDec(Wire.read());
+  uint8_t month = bcdToDec(Wire.read());
+  uint16_t year = 2000 + bcdToDec(Wire.read());
 
   return MyDateTime(year, month, day, hour, minute, second);
 }
@@ -385,7 +394,7 @@ void SetupRTC() {
     if (ms.Match((char*)pattern) != REGEXP_MATCHED) {
       printLCD("BAD URL or SD", "Resetting..");
       delay(5000);
-      arduinoReset();
+      programReset();
     } 
 
     //spliting
@@ -411,6 +420,65 @@ void SetupRTC() {
     isRTCOK = 1;
   }
 }
+
+void setupModem()
+{
+#ifdef MODEM_RST
+    // Keep reset high
+    pinMode(MODEM_RST, OUTPUT);
+    digitalWrite(MODEM_RST, HIGH);
+#endif
+
+    pinMode(MODEM_PWRKEY, OUTPUT);
+    pinMode(MODEM_POWER_ON, OUTPUT);
+
+    // Turn on the Modem power first
+   
+    digitalWrite(MODEM_POWER_ON, HIGH);
+
+    // Pull down PWRKEY for more than 1 second according to manual requirements
+    // digitalWrite(MODEM_PWRKEY, HIGH);
+    // delay(100);
+    digitalWrite(MODEM_PWRKEY, LOW);
+    delay(2000);
+    digitalWrite(MODEM_PWRKEY, HIGH);
+
+    // Initialize the indicator as an output
+    pinMode(LED_GPIO, OUTPUT);
+    digitalWrite(LED_GPIO, LED_OFF);
+}
+
+void createDir(fs::FS &fs, const char *path) {
+  return fs.mkdir(path);
+}
+
+bool writeFile(fs::FS &fs, const char *path, const char *message) {
+  File file = fs.open(path, FILE_WRITE);
+  if (!file) {
+    return 0;
+  }
+  bool res = 0;
+  if (file.print(message)) {
+    res = 1
+  }
+  file.close();
+  return res;
+}
+
+bool appendFile(fs::FS &fs, const char *path, const char *message) {
+  File file = fs.open(path, FILE_APPEND);
+  if (!file) {
+    return 0;
+  }
+  bool res = 0;
+  if (file.print(message)) {
+    res = 1;
+  } 
+  file.close();
+  return res;
+}
+
+
 
 // int split(String data, char delimiter, String result[]) {
 //   int count = 0;
@@ -452,3 +520,18 @@ void SetupRTC() {
   // delay(1000);
   // Serial1.println("AT+CIPSERVER=1,80");      // Открываем сервер на порту 80
   // delay(1000);
+
+  //const uint8_t reset_pin = 11; // with multiplexer is A3
+
+    // #ifdef DEBUG
+  //   Serial.println();
+  //   Serial.print(response);
+  //   CHECK
+
+  //   if(!findOk(response)) {
+  //     Serial.println("Start Resetting... \n");
+  //     funcIfNotOk();
+  //   }
+
+  //   Serial.println();
+  // #endif
