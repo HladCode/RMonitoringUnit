@@ -45,13 +45,46 @@ struct MyDateTime {
 };
 
 void programReset();
-void sendData(const String& command, const int timeout = DEFAULT_TIMEOUT, void(*funcIfNotOk)() = programReset);
-String getData(const String& command, const int timeout = DEFAULT_TIMEOUT);
+bool findOk(const String& txt);
+void sendData(const String& command, const int timeout = DEFAULT_TIMEOUT, void(*funcIfNotOk)() = programReset) { //Send command function
+  String response = ""; 
+  Serial1.println(command); 
+  long int time = millis();
+  while( (time+timeout) > millis()){
+    while(Serial1.available()){       
+      response += (char)Serial1.read(); 
+    }  
+  }
+  if(!findOk(response)) {
+      lcd.clear();
+      lcd.print(command);
+      funcIfNotOk();
+  }
+}
+
+String getData(const String& command, const int timeout = DEFAULT_TIMEOUT) {
+  String response = ""; 
+  Serial1.println(command); 
+    long int time = millis();
+    while( (time+timeout) > millis()){
+      while(Serial1.available()){       
+        response += (char)Serial1.read(); 
+      }  
+    }    
+    // #ifdef DEBUG
+    //   Serial.println();
+    //   Serial.print(response);
+    //   CHECK
+    //   Serial.println();
+    // #endif
+
+    return response;
+}
 void setupModem();
 void sendFloatToServer(float valueToSend, MyDateTime dt, String SensorPinNumber, String Purpose);
 float TempreatureFromAdc(const int16_t& thermistor_adc_val);
 
-bool findOk(const String& txt);
+
 void plug() {}
 
 uint8_t bcdToDec(uint8_t val);
@@ -61,9 +94,18 @@ void setRTC(const MyDateTime &dt);
 MyDateTime getRTC();
 void SetupRTC();
 
-void printLCD(const String& txt, const String& txt2 = "");
+void printLCD(const String& txt, const String& txt2 = "") {
+  lcd.clear();
+  lcd.print(txt);
+  if(txt != "") {
+    lcd.setCursor(0, 1);
+    lcd.print(txt2);
+  }
+  lcd.setCursor(0, 0);
+}
 
-void createDir(fs::FS &fs, const char *path);
+
+bool createDir(fs::FS &fs, const char *path);
 bool writeFile(fs::FS &fs, const char *path, const char *message);
 bool appendFile(fs::FS &fs, const char *path, const char *message);
 
@@ -235,49 +277,6 @@ void loop() {
   }
 }
 
-void sendData(const String& command, const int timeout = DEFAULT_TIMEOUT, void(*funcIfNotOk)() = programReset) { //Send command function
-  String response = ""; 
-  Serial1.println(command); 
-  long int time = millis();
-  while( (time+timeout) > millis()){
-    while(Serial1.available()){       
-      response += (char)Serial1.read(); 
-    }  
-  }
-  if(!findOk(response)) {
-      lcd.clear();
-      lcd.print(command);
-      if(funcIfNotOk == programReset){
-        lcd.setCursor(0, 1);
-        lcd.print("Resetting...");
-        lcd.setCursor(0, 0);
-        delay(5000);  
-      }
-      funcIfNotOk();
-  }
-
-
-}
-
-String getData(const String& command, const int timeout = DEFAULT_TIMEOUT) {
-  String response = ""; 
-  Serial1.println(command); 
-    long int time = millis();
-    while( (time+timeout) > millis()){
-      while(Serial1.available()){       
-        response += (char)Serial1.read(); 
-      }  
-    }    
-    // #ifdef DEBUG
-    //   Serial.println();
-    //   Serial.print(response);
-    //   CHECK
-    //   Serial.println();
-    // #endif
-
-    return response;
-}
-
 void sendFloatToServer(float valueToSend, MyDateTime dt, String SensorPinNumber, String Purpose) {
   sendData("AT+HTTPPARA=\"URL\", \""+URL+"/data\"");
   String jsonData = "{\"id\":\""+String(ID[0]+ID[1]+ID[2]+ID[3]+ID[4]+ID[5]+ID[6]+ID[7]+ID[8]+ID[9])+
@@ -302,13 +301,21 @@ void sendFloatToServer(float valueToSend, MyDateTime dt, String SensorPinNumber,
 }
 
 float TempreatureFromAdc(const int16_t& thermistor_adc_val) {
-  float output_voltage, thermistor_resistance, therm_res_ln, temperature;  
-  output_voltage = ( (thermistor_adc_val * 5.0) / 1023.0 );
-  thermistor_resistance = ( ( 5 * ( 10.0 / output_voltage ) ) - 10 ); /* Resistance in kilo ohms */
-  thermistor_resistance = thermistor_resistance * 1000 ; /* Resistance in ohms   */
-  therm_res_ln = log(thermistor_resistance);
-  temperature = ( 1 / ( 0.001129148 + ( 0.000234125 * therm_res_ln ) + ( 0.0000000876741 * therm_res_ln * therm_res_ln * therm_res_ln ) ) ); /* Temperature in Kelvin */
-  return temperature - 273.15; /* Temperature in degree Celsius */
+  if (thermistor_adc_val == 0) return NAN; // Проверка на 0, чтобы избежать деления на ноль
+
+  float output_voltage = (thermistor_adc_val * 3.3) / 4095.0;  // Используем 3.3V и 12-битный АЦП ESP32
+
+  if (output_voltage == 0) return NAN; // Проверка на нулевое напряжение
+
+  float thermistor_resistance = ( ( 3.3 * ( 10.0 / output_voltage ) ) - 10 ); // 10kΩ номинал
+  thermistor_resistance *= 1000; // Перевод в Ом
+
+  if (thermistor_resistance <= 0) return NAN; // Проверка на отрицательное сопротивление
+
+  float therm_res_ln = log(thermistor_resistance);
+  float temperature = ( 1 / ( 0.001129148 + ( 0.000234125 * therm_res_ln ) + ( 0.0000000876741 * therm_res_ln * therm_res_ln * therm_res_ln ) ) );
+
+  return temperature - 273.15; // Конвертация в градусы Цельсия
 }
 
 bool findOk(const String& txt) {
@@ -316,9 +323,32 @@ bool findOk(const String& txt) {
 }
 
 void programReset() {
-  //TODO: check esp_reset_reason();
-  //TODO: here esp32 is 
-  while(1){}
+  if(SD.exists("Fail_count.txt")) {
+    File myFile = SD.open("Fail_count.txt", FILE_READ);
+    char fail_count = myFile.read();
+    myFile.close();
+    lcd.setCursor(0, 1);
+    if(fail_count < '3'){
+      lcd.print("Resetting...");
+      lcd.setCursor(0, 0);
+      delay(5000);
+      ++fail_count;
+
+      myFile = SD.open("Fail_count.txt", FILE_WRITE);
+      myFile.seek(0);  // Указатель в начало файла
+      myFile.print(fail_count); // Перезаписываем файл
+      myFile.close();
+
+      esp_restart();
+    } else {
+      lcd.print("Fatal!!");
+      lcd.setCursor(0, 0);
+      delay(5000);
+      while(1){}
+    }
+
+    
+  }
 }
 
 // Преобразование из двоично-десятичного формата в десятичный
@@ -363,16 +393,6 @@ MyDateTime getRTC() {
   return MyDateTime(year, month, day, hour, minute, second);
 }
 
-void printLCD(const String& txt, const String& txt2 = "") {
-  lcd.clear();
-  lcd.print(txt);
-  if(txt != "") {
-    lcd.setCursor(0, 1);
-    lcd.print(txt2);
-  }
-  lcd.setCursor(0, 0);
-}
-
 void SetupRTC() {
   if(isURLOK){
     sendData("AT+HTTPPARA=\"URL\", \""+URL+"/time\"");
@@ -390,7 +410,8 @@ void SetupRTC() {
     // checking dateTime
     const char* pattern = "^(%d%d%d%d) (%d%d) (%d%d) (%d%d) (%d%d) (%d%d)$";
     MatchState ms;
-    ms.Target(response.c_str());
+    char* pResponse = strdup(response.c_str());
+    ms.Target(pResponse);
     if (ms.Match((char*)pattern) != REGEXP_MATCHED) {
       printLCD("BAD URL or SD", "Resetting..");
       delay(5000);
@@ -401,7 +422,7 @@ void SetupRTC() {
     uint16_t dt[6];
     String buf = "";
     for (int i = 0, j=0; i < response.length(); ++i) {
-      if (response[i] == " ") {
+      if (response[i] == ' ') {
         if(i == (response.length()-1)){
           buf += response[i];
           dt[j] = buf.toInt();
@@ -448,7 +469,7 @@ void setupModem()
     digitalWrite(LED_GPIO, LED_OFF);
 }
 
-void createDir(fs::FS &fs, const char *path) {
+bool createDir(fs::FS &fs, const char *path) {
   return fs.mkdir(path);
 }
 
@@ -459,7 +480,7 @@ bool writeFile(fs::FS &fs, const char *path, const char *message) {
   }
   bool res = 0;
   if (file.print(message)) {
-    res = 1
+    res = 1;
   }
   file.close();
   return res;
