@@ -6,6 +6,8 @@
 #include <Regexp.h>
 #include "esp_system.h"
 
+#define DEBUG
+
 #define DEFAULT_TIMEOUT 5000
 #define MODEM_RST             5
 #define MODEM_PWRKEY          4
@@ -16,7 +18,7 @@
 #define LED_ON               HIGH
 #define LED_OFF              LOW
 
-#define thermistor_output1 A0
+#define thermistor_output1 35
 #define chipSelect_pin 5
 // #define SDA_pin 6
  #define SCL_pin 22
@@ -55,6 +57,11 @@ void sendData(const String& command, const int timeout = DEFAULT_TIMEOUT, void(*
       response += (char)Serial1.read(); 
     }  
   }
+
+#ifdef DEBUG
+  Serial.println(response);
+#endif
+
   if(!findOk(response)) {
       lcd.clear();
       lcd.print(command);
@@ -116,6 +123,10 @@ String URL = "";
 char ID[10];
 
 void setup() {
+#ifdef DEBUG
+  Serial.begin(9600);
+#endif 
+
   lcd.init();                      
   lcd.backlight();
   printLCD("LCD and wire OK"); 
@@ -123,9 +134,7 @@ void setup() {
   //Power on the SIM800H
   setupModem();
   printLCD("SIM800H", "Powered");
-
-  while(!Serial1.availableForWrite());
-  printLCD("Serial1 is write", "available");
+  delay(5000);
  
   printLCD("AT and Serial1", "initialization.. ");   
   Serial1.begin(9600, SERIAL_8N1, MODEM_RX, MODEM_TX);
@@ -139,11 +148,11 @@ void setup() {
           delay(3000);
       } else {
           printLCD("No OK response");
-          while(1){}
+          programReset();
       }
   } else {
       printLCD("No response");
-      while(1){}
+      programReset();
   }
   printLCD("AT commands", "initialization.. ");   
 
@@ -166,7 +175,19 @@ void setup() {
   printLCD("SAPBR2.1 OK");
   sendData("AT+CMGF=1"); // Set the SMS in text mode
   printLCD("SMS OK");
-
+  printLCD("HTTP", "initialization..");  
+  sendData("AT+HTTPINIT");
+  printLCD("AT+HTTPINIT OK");
+  printLCD("HTTP parameters", "setting...");  
+  sendData("AT+HTTPPARA=\"CID\", 1");
+  printLCD("CID OK");
+  sendData("AT+HTTPPARA=\"CONTENT\", \"application/json\"");
+  printLCD("CONTENT OK");
+  sendData("AT+HTTPPARA?");
+  printLCD("AT+HTTPPARA? OK");
+  sendData("AT+CGATT?");
+  
+  
   printLCD("Initializing", "SD card..");
   if (!SD.begin(chipSelect_pin)) {
     printLCD("SD module BAD", "Resetting...");
@@ -176,37 +197,34 @@ void setup() {
     printLCD("SD module OK");
   }
 
-  printLCD("HTTP", "initialization..");   
-  sendData("AT+HTTPINIT");
-  printLCD("AT+HTTPINIT OK");
-
-  printLCD("HTTP parameters", "setting...");  
-  sendData("AT+HTTPPARA=\"CID\", 1");
-  printLCD("CID OK");
-  sendData("AT+HTTPPARA=\"CONTENT\", \"application/json\"");
-  printLCD("CONTENT OK");
-  sendData("AT+HTTPPARA?");
-  printLCD("AT+HTTPPARA? OK");
-  
-  //Example: 1234567890 http://www.example.com
-  if(SD.exists("Config.txt")) {
-    File myFile = SD.open("Config.txt", FILE_READ);
-    int i = 0;
-    while (i < 10) {
-      ID[i] = myFile.read();
-      ++i;
-    }
-    ++i;
-    while (myFile.available()) {
-      URL += myFile.read();
-    }
-    isURLOK = 1;
-    printLCD("Config OK");
-    myFile.close();
-  } else {
+  //Example: 12345abcde http://www.example.com
+  printLCD("Reading", "config.txt");
+  if(!SD.exists("/Config.txt")) {
     printLCD("Config.txt BAD", "RAAF"); // Reset after adding file
-    while(1){}
+    programReset();
   }
+  File myFile = SD.open("/Config.txt", FILE_READ);
+  int i = 0;
+  while (i < 10) {
+    ID[i] = char(myFile.read());
+    ++i;
+  }
+  myFile.read();
+
+  while (myFile.available()) {
+    URL += char(myFile.read());
+  }
+
+  int bufCount = URL.indexOf("\n");
+  if(bufCount >= 0){
+    URL.remove(bufCount);
+  }
+
+  //TODO: сделать перепроверку URL, рабочий ли он
+  isURLOK = 1;
+  printLCD("Config OK");
+  myFile.close();
+
 
   if(getRTC().year < 2025){
     printLCD("RTC BAD");
@@ -231,6 +249,9 @@ void loop() {
 
     // Проверка на наличие заголовка SMS
     if (message.indexOf("+CMT:") != -1) {
+
+      // TODO: сделать код более понятней и сделать так чтоб ссылка на сервер сохранялась
+
       // Извлечение текста SMS
       int index = message.indexOf("\r\n") + 2; // Найти начало текста SMS
       String command = message.substring(index); // Извлечь текст сообщения
@@ -240,7 +261,7 @@ void loop() {
       MatchState ms;
       char* command_pchar = strdup(command.c_str());
       ms.Target(command_pchar);
-      if (ms.Match((char*)pattern) == REGEXP_MATCHED) {
+      if (ms.Match((char*)pattern) == REGEXP_MATCHED && command.startsWith(String("id:")+String(ID))) {
         URL="http";
         uint8_t i = 10+7+4+1; // 10 - id, 7 - id:;url:, 4 - http, 1 - possible s
         for(;i<command.length();++i){
@@ -261,31 +282,42 @@ void loop() {
 
   if(isURLOK && isRTCOK){
     MyDateTime dt = getRTC();
-    String dataPath = "t(C)/0/"+String(dt.year)+"/"+String(dt.month)+"/"+String(dt.day);
+    String dataPath = "/t(C)/0/"+String(dt.year)+"/"+String(dt.month)+"/"+String(dt.day);
 
-    sendFloatToServer(TempreatureFromAdc(analogRead(thermistor_output1)), dt, "0", "t(C)");
+    sendData("AT+HTTPSTATUS?");
+    sendFloatToServer(TempreatureFromAdc(analogRead(thermistor_output1)), dt, "35", "t(C)");
 
     if(!SD.exists(dataPath+"/data.txt")){
-      SD.mkdir("t(C)/0/");
-      SD.mkdir("t(C)/0/"+String(dt.year));
-      SD.mkdir("t(C)/0/"+String(dt.year)+"/"+String(dt.month));
+      SD.mkdir("/t(C)/0/");
+      SD.mkdir("/t(C)/0/"+String(dt.year));
+      SD.mkdir("/t(C)/0/"+String(dt.year)+"/"+String(dt.month));
       SD.mkdir(dataPath);
     }
-    File d1 = SD.open(dataPath+"/data.txt", FILE_WRITE);
+    File d1 = SD.open(dataPath+"/data.txt", FILE_APPEND);
     d1.println(String(dt.hour)+":"+String(dt.minute)+":"+String(dt.second)+" "+String(TempreatureFromAdc(analogRead(thermistor_output1))));
     d1.close();
   }
 }
 
 void sendFloatToServer(float valueToSend, MyDateTime dt, String SensorPinNumber, String Purpose) {
-  sendData("AT+HTTPPARA=\"URL\", \""+URL+"/data\"");
-  String jsonData = "{\"id\":\""+String(ID[0]+ID[1]+ID[2]+ID[3]+ID[4]+ID[5]+ID[6]+ID[7]+ID[8]+ID[9])+
-  "\", \"p\"" + Purpose + 
-  "\", n:\""+SensorPinNumber+
-  "\", t:\""+String(dt.year)+" "+String(dt.month)+" "+String(dt.day)+" "+String(dt.hour)+" "+String(dt.minute)+" "+String(dt.second)+
-  "\",v:"+String(valueToSend)+"}";
+  
+  Serial.println("AT+HTTPPARA=\"URL\",\""+URL+"/data\"");
 
-  sendData("AT+HTTPDATA="+ String(jsonData.length())+",10000");
+  sendData("AT+HTTPPARA=\"URL\",\""+URL+"/data\"", DEFAULT_TIMEOUT, plug);
+  String jsonData = "{\"id\":\""+String(ID)+
+  "\",\"p\":\"" + Purpose + 
+  "\",\"n\":\""+SensorPinNumber+
+  "\",\"t\":\""+String(dt.year)+" "+String(dt.month)+" "+String(dt.day)+" "+String(dt.hour)+" "+String(dt.minute)+" "+String(dt.second)+
+  "\",\"v\":"+String(valueToSend, 2)+"}";
+
+  Serial.println(jsonData);
+  Serial.println(jsonData.length());
+
+  delay(3000);
+  
+  Serial.println(getData("AT+HTTPDATA=" + String(jsonData.length()) + ",10000\r\n"));
+
+
   delay(100);
   Serial1.print(jsonData);
   delay(100);
@@ -295,9 +327,9 @@ void sendFloatToServer(float valueToSend, MyDateTime dt, String SensorPinNumber,
   delay(1000);
   
   String response = getData("AT+HTTPREAD");
-// #ifdef DEBUG
-//   Serial.println(response);
-// #endif
+#ifdef DEBUG
+  Serial.println(response);
+#endif
 }
 
 float TempreatureFromAdc(const int16_t& thermistor_adc_val) {
@@ -324,30 +356,43 @@ bool findOk(const String& txt) {
 
 void programReset() {
   if(SD.exists("Fail_count.txt")) {
-    File myFile = SD.open("Fail_count.txt", FILE_READ);
+    File myFile = SD.open("/Fail_count.txt", FILE_READ);
     char fail_count = myFile.read();
     myFile.close();
     lcd.setCursor(0, 1);
     if(fail_count < '3'){
+      lcd.setCursor(0, 1);
       lcd.print("Resetting...");
       lcd.setCursor(0, 0);
-      delay(5000);
       ++fail_count;
 
-      myFile = SD.open("Fail_count.txt", FILE_WRITE);
+      myFile = SD.open("/Fail_count.txt", FILE_WRITE);
       myFile.seek(0);  // Указатель в начало файла
       myFile.print(fail_count); // Перезаписываем файл
       myFile.close();
 
-      esp_restart();
+      delay(5000);
+      // esp_restart();
+      while(1){}
     } else {
+      myFile = SD.open("/Fail_count.txt", FILE_WRITE);
+      myFile.seek(0);  // Указатель в начало файла
+      myFile.print(0); // Перезаписываем файл
+      myFile.close();
+
       lcd.print("Fatal!!");
       lcd.setCursor(0, 0);
       delay(5000);
       while(1){}
     }
+  } else {
+    File myFile = SD.open("/Fail_count.txt", FILE_WRITE);
+    myFile.seek(0);  // Указатель в начало файла
+    myFile.print(1); // Перезаписываем файл
+    myFile.close();
 
-    
+    //esp_restart();
+    while(1){}
   }
 }
 
