@@ -1,12 +1,17 @@
 #include <LiquidCrystal_I2C.h>
 #include "Wire.h"
 #include "FS.h"
-#include <SPI.h>
-#include <SD.h>
+
 #include <Regexp.h>
 #include "esp_system.h"
 
 #define DEBUG
+#define SD_OFF
+
+#ifndef SD_OFF
+#include <SPI.h>
+#include <SD.h>
+#endif
 
 #define DEFAULT_TIMEOUT 5000
 #define MODEM_RST             5
@@ -19,9 +24,14 @@
 #define LED_OFF              LOW
 
 #define thermistor_output1 35
-#define chipSelect_pin 5
 // #define SDA_pin 6
  #define SCL_pin 22
+
+// Software SPI for SD card module
+int sck = 25;
+int miso = 32;
+int mosi = 26;
+int cs = 33;
 
 #define RTC_ADDRESS 0x68
 #define LCD_ADDRESS 0x27
@@ -63,6 +73,10 @@ void sendData(const String& command, const int timeout = DEFAULT_TIMEOUT, void(*
 #endif
 
   if(!findOk(response)) {
+      if(funcIfNotOk = plug) {
+        return;
+      }
+
       lcd.clear();
       lcd.print(command);
       funcIfNotOk();
@@ -71,22 +85,32 @@ void sendData(const String& command, const int timeout = DEFAULT_TIMEOUT, void(*
 
 String getData(const String& command, const int timeout = DEFAULT_TIMEOUT) {
   String response = ""; 
-  Serial1.println(command); 
-    long int time = millis();
-    while( (time+timeout) > millis()){
-      while(Serial1.available()){       
-        response += (char)Serial1.read(); 
-      }  
-    }    
-    // #ifdef DEBUG
-    //   Serial.println();
-    //   Serial.print(response);
-    //   CHECK
-    //   Serial.println();
-    // #endif
+  Serial1.print(command + "\r\n");
+  delay(500);
+  
+  long int startTime = millis();
+  while (!Serial1.available() && millis() - startTime < timeout) {
+    delay(10);  // Ждем, пока появятся данные
+  }
+  Serial.println("Serial1.available: " + String(Serial1.available()));
 
-    return response;
+  Serial1.flush();
+
+
+  long int time = millis();
+  while ((time + timeout) > millis()) {
+    while (Serial1.available()) {       
+      char c = (char)Serial1.read(); 
+      response += c;
+      Serial.print(c); 
+    }
+  }    
+
+  Serial.println("\ngetData end");
+
+  return response;
 }
+
 void setupModem();
 void sendFloatToServer(float valueToSend, MyDateTime dt, String SensorPinNumber, String Purpose);
 float TempreatureFromAdc(const int16_t& thermistor_adc_val);
@@ -119,8 +143,15 @@ bool appendFile(fs::FS &fs, const char *path, const char *message);
 bool isURLOK = 0;
 bool isRTCOK = 0;
 
-String URL = "";
+String URL;
 char ID[10];
+
+#ifdef DEBUG
+void checkMemory() {
+  Serial.print("Свободная память (heap): ");
+  Serial.println(esp_get_free_heap_size());
+}
+#endif 
 
 void setup() {
 #ifdef DEBUG
@@ -137,7 +168,7 @@ void setup() {
   delay(5000);
  
   printLCD("AT and Serial1", "initialization.. ");   
-  Serial1.begin(9600, SERIAL_8N1, MODEM_RX, MODEM_TX);
+  Serial1.begin(115200, SERIAL_8N1, MODEM_RX, MODEM_TX);
   Serial1.println("AT");
   delay(1000);
   if (Serial1.available()) {
@@ -177,6 +208,8 @@ void setup() {
   printLCD("SMS OK");
   printLCD("HTTP", "initialization..");  
   sendData("AT+HTTPINIT");
+  sendData("AT+HTTPTERM");
+  sendData("AT+HTTPINIT");
   printLCD("AT+HTTPINIT OK");
   printLCD("HTTP parameters", "setting...");  
   sendData("AT+HTTPPARA=\"CID\", 1");
@@ -185,11 +218,15 @@ void setup() {
   printLCD("CONTENT OK");
   sendData("AT+HTTPPARA?");
   printLCD("AT+HTTPPARA? OK");
-  sendData("AT+CGATT?");
+  sendData("AT+CIPRXGET?");
   
   
+#ifndef SD_OFF
   printLCD("Initializing", "SD card..");
-  if (!SD.begin(chipSelect_pin)) {
+  SD.end();
+
+  SPI.begin(sck, miso, mosi, cs);
+  if (!SD.begin(cs, SPI)) {
     printLCD("SD module BAD", "Resetting...");
     delay(5000);
     programReset();
@@ -219,11 +256,29 @@ void setup() {
   if(bufCount >= 0){
     URL.remove(bufCount);
   }
-
-  //TODO: сделать перепроверку URL, рабочий ли он
-  isURLOK = 1;
   printLCD("Config OK");
   myFile.close();
+#endif
+  //TODO: сделать перепроверку URL, рабочий ли он
+  isURLOK = 1;
+
+#ifdef SD_OFF
+  URL = "http://46.255.36.25:1488";
+  ID[0]='D';
+  ID[1]='_';
+  ID[2]='_';
+  ID[3]='_';
+  ID[4]='_';
+  ID[5]='_';
+  ID[6]='_';
+  ID[7]='_';
+  ID[8]='_';
+  ID[9]='_';
+#endif
+
+  
+  
+  
 
 
   if(getRTC().year < 2025){
@@ -233,14 +288,13 @@ void setup() {
     printLCD("RTC OK");
     isRTCOK = 1;
   }
+  isRTCOK = 1;
   
   if(isURLOK){
     printLCD("Data transfering", "started");  
   } else {
     printLCD("Waiting URL via","SMS (user app)");  
   }
-
-  //pinMode(thermistor_output1, INPUT); для аналога не требуеться 
 }
   
 void loop() {
@@ -284,10 +338,11 @@ void loop() {
     MyDateTime dt = getRTC();
     String dataPath = "/t(C)/0/"+String(dt.year)+"/"+String(dt.month)+"/"+String(dt.day);
 
-    sendData("AT+HTTPSTATUS?");
+//    sendData("AT+HTTPSTATUS?");
     sendFloatToServer(TempreatureFromAdc(analogRead(thermistor_output1)), dt, "35", "t(C)");
-
+#ifndef SD_OFF
     if(!SD.exists(dataPath+"/data.txt")){
+      SD.mkdir("/t(C)");
       SD.mkdir("/t(C)/0/");
       SD.mkdir("/t(C)/0/"+String(dt.year));
       SD.mkdir("/t(C)/0/"+String(dt.year)+"/"+String(dt.month));
@@ -296,12 +351,13 @@ void loop() {
     File d1 = SD.open(dataPath+"/data.txt", FILE_APPEND);
     d1.println(String(dt.hour)+":"+String(dt.minute)+":"+String(dt.second)+" "+String(TempreatureFromAdc(analogRead(thermistor_output1))));
     d1.close();
+#endif
   }
 }
 
 void sendFloatToServer(float valueToSend, MyDateTime dt, String SensorPinNumber, String Purpose) {
   
-  Serial.println("AT+HTTPPARA=\"URL\",\""+URL+"/data\"");
+  // Serial.println("AT+HTTPPARA=\"URL\",\""+URL+"/data\"");
 
   sendData("AT+HTTPPARA=\"URL\",\""+URL+"/data\"", DEFAULT_TIMEOUT, plug);
   String jsonData = "{\"id\":\""+String(ID)+
@@ -310,13 +366,13 @@ void sendFloatToServer(float valueToSend, MyDateTime dt, String SensorPinNumber,
   "\",\"t\":\""+String(dt.year)+" "+String(dt.month)+" "+String(dt.day)+" "+String(dt.hour)+" "+String(dt.minute)+" "+String(dt.second)+
   "\",\"v\":"+String(valueToSend, 2)+"}";
 
+#ifdef DEBUG
   Serial.println(jsonData);
-  Serial.println(jsonData.length());
+  // Serial.println(jsonData.length());
+#endif
 
-  delay(3000);
-  
+  delay(100);
   Serial.println(getData("AT+HTTPDATA=" + String(jsonData.length()) + ",10000\r\n"));
-
 
   delay(100);
   Serial1.print(jsonData);
@@ -355,45 +411,46 @@ bool findOk(const String& txt) {
 }
 
 void programReset() {
-  if(SD.exists("Fail_count.txt")) {
-    File myFile = SD.open("/Fail_count.txt", FILE_READ);
-    char fail_count = myFile.read();
-    myFile.close();
-    lcd.setCursor(0, 1);
-    if(fail_count < '3'){
-      lcd.setCursor(0, 1);
-      lcd.print("Resetting...");
-      lcd.setCursor(0, 0);
-      ++fail_count;
+  while(1){}
+  // if(SD.exists("Fail_count.txt")) {
+  //   // File myFile = SD.open("/Fail_count.txt", FILE_READ);
+  //   // char fail_count = myFile.read();
+  //   // myFile.close();
+  //   //lcd.setCursor(0, 1);
+  //   if(fail_count < '3'){
+  //     //lcd.setCursor(0, 1);
+  //     //lcd.print("Resetting...");
+  //     //lcd.setCursor(0, 0);
+  //     ++fail_count;
 
-      myFile = SD.open("/Fail_count.txt", FILE_WRITE);
-      myFile.seek(0);  // Указатель в начало файла
-      myFile.print(fail_count); // Перезаписываем файл
-      myFile.close();
+  //     // myFile = SD.open("/Fail_count.txt", FILE_WRITE);
+  //     // myFile.seek(0);  // Указатель в начало файла
+  //     // myFile.print(fail_count); // Перезаписываем файл
+  //     // myFile.close();
 
-      delay(5000);
-      // esp_restart();
-      while(1){}
-    } else {
-      myFile = SD.open("/Fail_count.txt", FILE_WRITE);
-      myFile.seek(0);  // Указатель в начало файла
-      myFile.print(0); // Перезаписываем файл
-      myFile.close();
+  //     delay(5000);
+  //     // esp_restart();
+  //     while(1){}
+  //   } else {
+  //     // myFile = SD.open("/Fail_count.txt", FILE_WRITE);
+  //     // myFile.seek(0);  // Указатель в начало файла
+  //     // myFile.print(0); // Перезаписываем файл
+  //     // myFile.close();
 
-      lcd.print("Fatal!!");
-      lcd.setCursor(0, 0);
-      delay(5000);
-      while(1){}
-    }
-  } else {
-    File myFile = SD.open("/Fail_count.txt", FILE_WRITE);
-    myFile.seek(0);  // Указатель в начало файла
-    myFile.print(1); // Перезаписываем файл
-    myFile.close();
+  //     //lcd.print("Fatal!!");
+  //     //lcd.setCursor(0, 0);
+  //     delay(5000);
+  //     while(1){}
+  //   }
+  // } else {
+  //   // File myFile = SD.open("/Fail_count.txt", FILE_WRITE);
+  //   // myFile.seek(0);  // Указатель в начало файла
+  //   // myFile.print(1); // Перезаписываем файл
+  //   // myFile.close();
 
-    //esp_restart();
-    while(1){}
-  }
+  //   //esp_restart();
+  //   while(1){}
+  // }
 }
 
 // Преобразование из двоично-десятичного формата в десятичный
@@ -440,20 +497,31 @@ MyDateTime getRTC() {
 
 void SetupRTC() {
   if(isURLOK){
-    sendData("AT+HTTPPARA=\"URL\", \""+URL+"/time\"");
-    // String jsonData = "{\"t\":\"" + String(tempreature) + "\", \"p\":\"" + RED_NAME + "/" + termistorpPath +"\"}";
-    // sendData("AT+HTTPDATA="+ String(jsonData.length())+",10000");
-    // delay(100);
-    // Serial1.print(jsonData);
+
+    sendData("AT+HTTPPARA=\"URL\",\""+URL+"/time\"", DEFAULT_TIMEOUT, plug);
     delay(100);
     Serial1.write(26); // Ctrl+Z in ASCII
     delay(100);
     sendData("AT+HTTPACTION=0", DEFAULT_TIMEOUT, plug);
-    delay(1000);
+    delay(2000);
     String response = getData("AT+HTTPREAD");
+    delay(2000);
+
+    Serial.println("Response: ");
+    Serial.println(response);
+
+    // Serial.println("\nCheck:");
+    // Serial.println(int('\n'));
+    // Serial.println(int(' '));
+    // Serial.println();
+
+    // for(int i = 0; i < response.length();++i){
+    //   Serial.println(int(response[i]));
+    // }
+    // Serial.println("\n\nEnd");
 
     // checking dateTime
-    const char* pattern = "^(%d%d%d%d) (%d%d) (%d%d) (%d%d) (%d%d) (%d%d)$";
+    const char* pattern = ".-\n(%d%d%d%d) (%d%d) (%d%d) (%d%d) (%d%d) (%d%d)\r.*";
     MatchState ms;
     char* pResponse = strdup(response.c_str());
     ms.Target(pResponse);
@@ -466,7 +534,9 @@ void SetupRTC() {
     //spliting
     uint16_t dt[6];
     String buf = "";
-    for (int i = 0, j=0; i < response.length(); ++i) {
+
+    int start_index = response.indexOf("2");
+    for (int i = start_index, j=0; i < response.length(); ++i) {
       if (response[i] == ' ') {
         if(i == (response.length()-1)){
           buf += response[i];
@@ -476,6 +546,7 @@ void SetupRTC() {
         dt[j] = buf.toInt();
         buf = "";
         ++j;
+        continue;
       }
       buf += response[i];
     } 
@@ -514,63 +585,36 @@ void setupModem()
     digitalWrite(LED_GPIO, LED_OFF);
 }
 
-bool createDir(fs::FS &fs, const char *path) {
-  return fs.mkdir(path);
-}
-
-bool writeFile(fs::FS &fs, const char *path, const char *message) {
-  File file = fs.open(path, FILE_WRITE);
-  if (!file) {
-    return 0;
-  }
-  bool res = 0;
-  if (file.print(message)) {
-    res = 1;
-  }
-  file.close();
-  return res;
-}
-
-bool appendFile(fs::FS &fs, const char *path, const char *message) {
-  File file = fs.open(path, FILE_APPEND);
-  if (!file) {
-    return 0;
-  }
-  bool res = 0;
-  if (file.print(message)) {
-    res = 1;
-  } 
-  file.close();
-  return res;
-}
-
-
-
-// int split(String data, char delimiter, String result[]) {
-//   int count = 0;
-
-//   while (data.length() > 0) {
-//     int index = data.indexOf(delimiter);
-//     if (index == -1) {
-//       // No more delimiters, add the last part
-//       result[count++] = data;
-//       break;
-//     }
-
-//     // Add the substring to the result array
-//     result[count++] = data.substring(0, index);
-
-//     // Remove the processed part
-//     data = data.substring(index + 1);
-
-//     // Prevent overflow
-//     if (count >= MAX_PARTS) {
-//       break;
-//     }
-//   }
-
-//   return count; // Return the number of parts
+// bool createDir(fs::FS &fs, const char *path) {
+//   return fs.mkdir(path);
 // }
+
+// bool writeFile(fs::FS &fs, const char *path, const char *message) {
+//   File file = fs.open(path, FILE_WRITE);
+//   if (!file) {
+//     return 0;
+//   }
+//   bool res = 0;
+//   if (file.print(message)) {
+//     res = 1;
+//   }
+//   file.close();
+//   return res;
+// }
+
+// bool appendFile(fs::FS &fs, const char *path, const char *message) {
+//   File file = fs.open(path, FILE_APPEND);
+//   if (!file) {
+//     return 0;
+//   }
+//   bool res = 0;
+//   if (file.print(message)) {
+//     res = 1;
+//   } 
+//   file.close();
+//   return res;
+// }
+
 //const int DanfossAK32R_Pin = A1;
 //typedef int16_t ia; // adc in integer
 //ia U0, U100, P100;
@@ -579,25 +623,3 @@ bool appendFile(fs::FS &fs, const char *path, const char *message) {
 // }
 //  U0 = 162, U100 = 1012, P100 = 14;  // preassure param. that depends on special sensors.
   //ia DanfossAK32R_Output = analogRead(DanfossAK32R_Pin);
-
-
-  // Serial.println("Enabling server settings... ");    
-  // Serial1.println("AT+CIPMUX=1");            // Включаем мультиканальный режим
-  // delay(1000);
-  // Serial1.println("AT+CIPSERVER=1,80");      // Открываем сервер на порту 80
-  // delay(1000);
-
-  //const uint8_t reset_pin = 11; // with multiplexer is A3
-
-    // #ifdef DEBUG
-  //   Serial.println();
-  //   Serial.print(response);
-  //   CHECK
-
-  //   if(!findOk(response)) {
-  //     Serial.println("Start Resetting... \n");
-  //     funcIfNotOk();
-  //   }
-
-  //   Serial.println();
-  // #endif
