@@ -6,7 +6,7 @@
 #include "esp_system.h"
 
 #define DEBUG
-#define SD_OFF
+//#define SD_OFF
 
 #ifndef SD_OFF
 #include <SPI.h>
@@ -28,10 +28,10 @@
  #define SCL_pin 22
 
 // Software SPI for SD card module
-int sck = 25;
-int miso = 32;
-int mosi = 26;
-int cs = 33;
+int sck = 14;
+int miso = 2;
+int mosi = 15;
+int cs = 13;
 
 #define RTC_ADDRESS 0x68
 #define LCD_ADDRESS 0x27
@@ -263,7 +263,7 @@ void setup() {
   isURLOK = 1;
 
 #ifdef SD_OFF
-  URL = "http://46.255.36.25:1488";
+  URL = "URL";
   ID[0]='D';
   ID[1]='_';
   ID[2]='_';
@@ -275,11 +275,6 @@ void setup() {
   ID[8]='_';
   ID[9]='_';
 #endif
-
-  
-  
-  
-
 
   if(getRTC().year < 2025){
     printLCD("RTC BAD");
