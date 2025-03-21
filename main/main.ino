@@ -259,8 +259,7 @@ void setup() {
   printLCD("Config OK");
   myFile.close();
 #endif
-  //TODO: сделать перепроверку URL, рабочий ли он
-  isURLOK = 1;
+  isURLOK = isServerOK();
 
 #ifdef SD_OFF
   URL = "URL";
@@ -283,7 +282,6 @@ void setup() {
     printLCD("RTC OK");
     isRTCOK = 1;
   }
-  isRTCOK = 1;
   
   if(isURLOK){
     printLCD("Data transfering", "started");  
@@ -293,6 +291,14 @@ void setup() {
 }
   
 void loop() {
+  if(!isURLOK && isServerOK()) {
+    isURLOK = 1;
+    printLCD("Data transfering", "started");  
+    if(!isRTCOK) {
+      SetupRTC();
+    }
+  }
+
   if (Serial1.available()) {
     String message = Serial1.readString();
 
@@ -316,25 +322,29 @@ void loop() {
         for(;i<command.length();++i){
           URL += command[i];
         }
-        printLCD("URL OK");
-        isURLOK = 1;
+        isURLOK = isServerOK();
+        isURLOK ? printLCD("URL OK") : printLCD("URL BAD");
+        
 
         if(getRTC().year < 2025){
           SetupRTC();
-          isRTCOK = 1;
         }
       }
     }
   }
 
-  //TODO: write time on LCD here
 
-  if(isURLOK && isRTCOK){
+  if(isRTCOK){
     MyDateTime dt = getRTC();
+
+
     String dataPath = "/t(C)/0/"+String(dt.year)+"/"+String(dt.month)+"/"+String(dt.day);
 
-//    sendData("AT+HTTPSTATUS?");
-    sendFloatToServer(TempreatureFromAdc(analogRead(thermistor_output1)), dt, "35", "t(C)");
+    if(isURLOK){
+      sendFloatToServer(TempreatureFromAdc(analogRead(thermistor_output1)), dt, "35", "t(C)");
+    } else {
+      // тут короч сохранение несохранившихся данных
+    }
 #ifndef SD_OFF
     if(!SD.exists(dataPath+"/data.txt")){
       SD.mkdir("/t(C)");
@@ -381,6 +391,17 @@ void sendFloatToServer(float valueToSend, MyDateTime dt, String SensorPinNumber,
 #ifdef DEBUG
   Serial.println(response);
 #endif
+}
+
+bool isServerOK() {
+  sendData("AT+HTTPPARA=\"URL\",\""+URL+"\"", DEFAULT_TIMEOUT, plug);
+  delay(100);
+  Serial1.write(26); // Ctrl+Z in ASCII
+  delay(100);
+  sendData("AT+HTTPACTION=0", DEFAULT_TIMEOUT, plug);
+  delay(1000);
+  
+  return getData("AT+HTTPREAD").indexOf("GOOD") >= 0;
 }
 
 float TempreatureFromAdc(const int16_t& thermistor_adc_val) {
@@ -550,6 +571,9 @@ void SetupRTC() {
     setRTC(MyDateTime(dt[0], dt[1], dt[2], dt[3], dt[4], dt[5]));
     printLCD("RTC OK");
     isRTCOK = 1;
+  } else {
+    printLCD("RTC BAD");
+    isRTCOK = 0;
   }
 }
 
