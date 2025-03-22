@@ -1,7 +1,6 @@
 #include <LiquidCrystal_I2C.h>
 #include "Wire.h"
 #include "FS.h"
-
 #include <Regexp.h>
 #include "esp_system.h"
 
@@ -58,6 +57,18 @@ struct MyDateTime {
 
 void programReset();
 bool findOk(const String& txt);
+
+void printLCD(const String& txt, const String& txt2 = "") {
+  lcd.clear();
+  lcd.print(txt);
+  if(txt != "") {
+    lcd.setCursor(0, 1);
+    lcd.print(txt2);
+  }
+  lcd.setCursor(0, 0);
+}
+
+//bool isSetupAT = 0;
 void sendData(const String& command, const int timeout = DEFAULT_TIMEOUT, void(*funcIfNotOk)() = programReset) { //Send command function
   String response = ""; 
   Serial1.println(command); 
@@ -73,13 +84,18 @@ void sendData(const String& command, const int timeout = DEFAULT_TIMEOUT, void(*
 #endif
 
   if(!findOk(response)) {
-      if(funcIfNotOk = plug) {
-        return;
-      }
+    // if(isSetupAT) {
+    //   printLCD("SIM has not been", "inserted! Reset");
+    //   delay(6500);
+    // }
 
-      lcd.clear();
-      lcd.print(command);
-      funcIfNotOk();
+    if(funcIfNotOk == plug) {
+      return;
+    }
+
+    lcd.clear();
+    lcd.print(command);
+    funcIfNotOk();
   }
 }
 
@@ -125,16 +141,6 @@ void setRTC(const MyDateTime &dt);
 MyDateTime getRTC();
 void SetupRTC();
 
-void printLCD(const String& txt, const String& txt2 = "") {
-  lcd.clear();
-  lcd.print(txt);
-  if(txt != "") {
-    lcd.setCursor(0, 1);
-    lcd.print(txt2);
-  }
-  lcd.setCursor(0, 0);
-}
-
 
 bool createDir(fs::FS &fs, const char *path);
 bool writeFile(fs::FS &fs, const char *path, const char *message);
@@ -167,6 +173,7 @@ void setup() {
   printLCD("SIM800H", "Powered");
   delay(5000);
  
+//isSetupAT = 1;
   printLCD("AT and Serial1", "initialization.. ");   
   Serial1.begin(115200, SERIAL_8N1, MODEM_RX, MODEM_TX);
   Serial1.println("AT");
@@ -179,11 +186,13 @@ void setup() {
           delay(3000);
       } else {
           printLCD("No OK response");
-          programReset();
+          delay(3000);
+          esp_restart();
       }
   } else {
       printLCD("No response");
-      programReset();
+      delay(3000);
+      esp_restart();
   }
   printLCD("AT commands", "initialization.. ");   
 
@@ -219,19 +228,19 @@ void setup() {
   sendData("AT+HTTPPARA?");
   printLCD("AT+HTTPPARA? OK");
   sendData("AT+CIPRXGET?");
-  
-  
+//isSetupAT = 0;
+
 #ifndef SD_OFF
   printLCD("Initializing", "SD card..");
   SD.end();
 
   SPI.begin(sck, miso, mosi, cs);
   if (!SD.begin(cs, SPI)) {
-    printLCD("SD module BAD", "Resetting...");
-    delay(5000);
-    programReset();
+    printLCD("FATAL!!", "SD module BAD");
+    while(1){}
   } else {
     printLCD("SD module OK");
+    delay(200);
   }
 
   //Example: 12345abcde http://www.example.com
@@ -259,6 +268,12 @@ void setup() {
   printLCD("Config OK");
   myFile.close();
 #endif
+
+  myFile = SD.open("/Fail_count.txt", FILE_WRITE);
+  myFile.seek(0);  // Указатель в начало файла
+  myFile.print(0); // Перезаписываем файл
+  myFile.close();
+
   isURLOK = isServerOK();
 
 #ifdef SD_OFF
@@ -337,7 +352,6 @@ void loop() {
   if(isRTCOK){
     MyDateTime dt = getRTC();
 
-
     String dataPath = "/t(C)/0/"+String(dt.year)+"/"+String(dt.month)+"/"+String(dt.day);
 
     if(isURLOK){
@@ -388,6 +402,11 @@ void sendFloatToServer(float valueToSend, MyDateTime dt, String SensorPinNumber,
   delay(1000);
   
   String response = getData("AT+HTTPREAD");
+
+  if(response.indexOf("GOOD") == -1) {
+    isURLOK = isServerOK();
+  }
+
 #ifdef DEBUG
   Serial.println(response);
 #endif
@@ -427,46 +446,61 @@ bool findOk(const String& txt) {
 }
 
 void programReset() {
-  while(1){}
-  // if(SD.exists("Fail_count.txt")) {
-  //   // File myFile = SD.open("/Fail_count.txt", FILE_READ);
-  //   // char fail_count = myFile.read();
-  //   // myFile.close();
-  //   //lcd.setCursor(0, 1);
-  //   if(fail_count < '3'){
-  //     //lcd.setCursor(0, 1);
-  //     //lcd.print("Resetting...");
-  //     //lcd.setCursor(0, 0);
-  //     ++fail_count;
+  SD.end();
+  SPI.end();
 
-  //     // myFile = SD.open("/Fail_count.txt", FILE_WRITE);
-  //     // myFile.seek(0);  // Указатель в начало файла
-  //     // myFile.print(fail_count); // Перезаписываем файл
-  //     // myFile.close();
+  SPI.begin(sck, miso, mosi, cs);
+  if (!SD.begin(cs, SPI)) {
+    printLCD("FATAL!!", "SD module BAD");
+    while(1){}
+  } else {
+    printLCD("SD module OK");
+    delay(200);
+  }
+  
+  if(SD.exists("/Fail_count.txt")) {
+    File myFile = SD.open("/Fail_count.txt", FILE_READ);
+    int fail_count = myFile.read();
+    myFile.close();
+    lcd.setCursor(0, 1);
 
-  //     delay(5000);
-  //     // esp_restart();
-  //     while(1){}
-  //   } else {
-  //     // myFile = SD.open("/Fail_count.txt", FILE_WRITE);
-  //     // myFile.seek(0);  // Указатель в начало файла
-  //     // myFile.print(0); // Перезаписываем файл
-  //     // myFile.close();
+    Serial.println("programReset entry: ");
+    Serial.println(fail_count);
+    Serial.println(int('3'));
+    Serial.println("-------------------\n\n");
 
-  //     //lcd.print("Fatal!!");
-  //     //lcd.setCursor(0, 0);
-  //     delay(5000);
-  //     while(1){}
-  //   }
-  // } else {
-  //   // File myFile = SD.open("/Fail_count.txt", FILE_WRITE);
-  //   // myFile.seek(0);  // Указатель в начало файла
-  //   // myFile.print(1); // Перезаписываем файл
-  //   // myFile.close();
+    // Прогама может ошибиться 10 раз
+    if(fail_count < int('9')){
+      lcd.print("Resetting...");
+      lcd.setCursor(0, 0);
+      ++fail_count;
 
-  //   //esp_restart();
-  //   while(1){}
-  // }
+      myFile = SD.open("/Fail_count.txt", FILE_WRITE);
+      myFile.seek(0);  // Указатель в начало файла
+      myFile.print(char(fail_count)); // Перезаписываем файл
+      myFile.close();
+
+      delay(5000);
+      esp_restart(); // esp_restart();
+    } else {
+      myFile = SD.open("/Fail_count.txt", FILE_WRITE);
+      myFile.seek(0);  // Указатель в начало файла
+      myFile.print(0); // Перезаписываем файл
+      myFile.close();
+
+      lcd.print("Fatal!!");
+      lcd.setCursor(0, 0);
+      delay(5000);
+      while(1){}
+    }
+  } else {
+    File myFile = SD.open("/Fail_count.txt", FILE_WRITE);
+    myFile.seek(0);  // Указатель в начало файла
+    myFile.print(1); // Перезаписываем файл
+    myFile.close();
+
+    esp_restart(); // 
+  }
 }
 
 // Преобразование из двоично-десятичного формата в десятичный
