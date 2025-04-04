@@ -57,6 +57,7 @@ struct MyDateTime {
 
 void programReset();
 bool findOk(const String& txt);
+bool isServerOK();
 
 void printLCD(const String& txt, const String& txt2 = "") {
   lcd.clear();
@@ -214,6 +215,8 @@ void setup() {
   sendData("AT+SAPBR=2,1"); // Checking the carrier profile status
   printLCD("SAPBR2.1 OK");
   sendData("AT+CMGF=1"); // Set the SMS in text mode
+  sendData("AT+CNMI=1,2,0,0,0"); // Включаем автоматический прием SMS
+  sendData("AT+CSCS=\"GSM\""); // Устанавливаем кодировку текста
   printLCD("SMS OK");
   printLCD("HTTP", "initialization..");  
   sendData("AT+HTTPINIT");
@@ -306,44 +309,65 @@ void setup() {
 }
   
 void loop() {
-  if(!isURLOK && isServerOK()) {
-    isURLOK = 1;
-    printLCD("Data transfering", "started");  
-    if(!isRTCOK) {
-      SetupRTC();
-    }
-  }
-
   if (Serial1.available()) {
-    String message = Serial1.readString();
+    String raw_message = Serial1.readString();
+#ifdef DEBUG
+        Serial.println(raw_message);
+        for(int i = 0; i < raw_message.length();++i) {
+          Serial.print(int(raw_message[i]));
+          Serial.print(" ");
+        }
+        Serial.println("\n");
+#endif
 
     // Проверка на наличие заголовка SMS
-    if (message.indexOf("+CMT:") != -1) {
-
-      // TODO: сделать код более понятней и сделать так чтоб ссылка на сервер сохранялась
-
-      // Извлечение текста SMS
-      int index = message.indexOf("\r\n") + 2; // Найти начало текста SMS
-      String command = message.substring(index); // Извлечь текст сообщения
-
+    if (raw_message.indexOf("+CMT:") != -1) {
+#ifdef DEBUG
+        Serial.println("okokok");
+#endif
+      // id:id________;url:https://
       // changing url
-      const char* pattern = "^id:(%w%w%w%w%w%w%w%w%w%w);url:https?://.*$";
-      MatchState ms;
-      char* command_pchar = strdup(command.c_str());
-      ms.Target(command_pchar);
-      if (ms.Match((char*)pattern) == REGEXP_MATCHED && command.startsWith(String("id:")+String(ID))) {
-        URL="http";
-        uint8_t i = 10+7+4+1; // 10 - id, 7 - id:;url:, 4 - http, 1 - possible s
-        for(;i<command.length();++i){
-          URL += command[i];
-        }
+      if(raw_message.indexOf("set_isURLOK_true") != -1){
         isURLOK = isServerOK();
-        isURLOK ? printLCD("URL OK") : printLCD("URL BAD");
-        
-
         if(getRTC().year < 2025){
-          SetupRTC();
+            SetupRTC();
+        } else {
+          // отправка неотправленных данных на сервка
         }
+        isURLOK ? printLCD("Data transfering", "started") : printLCD("URL BAD");
+      } else {
+        String pattern = ".-\nid:"+String(ID)+";url:(https?://[^\r\n]+)\r.*";
+        MatchState ms;
+        char* raw_message_pchar = strdup(raw_message.c_str());
+        ms.Target(raw_message_pchar);
+        if (ms.Match((char*)pattern.c_str()) == REGEXP_MATCHED) {
+          URL = "";
+          int i = raw_message.indexOf("url:") + 4;
+          for(;;++i) {
+            char c = raw_message[i];
+            if(c == '\r') break;
+            URL += c;
+          }
+
+  #ifdef DEBUG
+          Serial.println(URL);
+  #endif
+          isURLOK = isServerOK();
+          isURLOK ? printLCD("URL OK") : printLCD("URL BAD");
+          if(isURLOK){
+            SD.remove("/Config.txt"); // TODO: fix config change
+            File myFile = SD.open("/Config.txt", FILE_WRITE);
+            myFile.print(String(ID)+" "+URL);
+            myFile.close();
+          }
+          
+          if(getRTC().year < 2025){
+            SetupRTC();
+          } else {
+            // отправка неотправленных данных на сервка
+          }
+          printLCD("Data transfering", "started");
+        }        
       }
     }
   }
@@ -398,14 +422,10 @@ void sendFloatToServer(float valueToSend, MyDateTime dt, String SensorPinNumber,
   delay(100);
   Serial1.write(26); // Ctrl+Z in ASCII
   delay(100);
-  sendData("AT+HTTPACTION=1", DEFAULT_TIMEOUT, plug);
+  String response = getData("AT+HTTPACTION=1", DEFAULT_TIMEOUT);
   delay(1000);
-  
-  String response = getData("AT+HTTPREAD");
 
-  if(response.indexOf("GOOD") == -1) {
-    isURLOK = isServerOK();
-  }
+  Serial.println(response);
 
 #ifdef DEBUG
   Serial.println(response);
