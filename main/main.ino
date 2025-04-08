@@ -355,10 +355,16 @@ void loop() {
           isURLOK = isServerOK();
           isURLOK ? printLCD("URL OK") : printLCD("URL BAD");
           if(isURLOK){
+  #ifdef DEBUG
+            Serial.println("111");
+  #endif
             SD.remove("/Config.txt"); // TODO: fix config change
             File myFile = SD.open("/Config.txt", FILE_WRITE);
             myFile.print(String(ID)+" "+URL);
             myFile.close();
+  #ifdef DEBUG
+            Serial.println("222");
+  #endif    
           }
           
           if(getRTC().year < 2025){
@@ -380,6 +386,8 @@ void loop() {
 
     if(isURLOK){
       sendFloatToServer(TempreatureFromAdc(analogRead(thermistor_output1)), dt, "35", "t(C)");
+      // TODO: если не получиться сделать проверку на валидность URL в sendFloatToServer, то можно
+      // просто тут вызывать isServerOK()
     } else {
       // тут короч сохранение несохранившихся данных
     }
@@ -425,7 +433,7 @@ void sendFloatToServer(float valueToSend, MyDateTime dt, String SensorPinNumber,
   String response = getData("AT+HTTPACTION=1", DEFAULT_TIMEOUT);
   delay(1000);
 
-  Serial.println(response);
+  Serial.println(response); // TODO: сделать чтоб response задавал isURLOk
 
 #ifdef DEBUG
   Serial.println(response);
