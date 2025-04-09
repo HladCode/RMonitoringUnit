@@ -109,8 +109,9 @@ String getData(const String& command, const int timeout = DEFAULT_TIMEOUT) {
   while (!Serial1.available() && millis() - startTime < timeout) {
     delay(10);  // Ждем, пока появятся данные
   }
+#ifdef DEBUG
   Serial.println("Serial1.available: " + String(Serial1.available()));
-
+#endif
   Serial1.flush();
 
 
@@ -119,11 +120,14 @@ String getData(const String& command, const int timeout = DEFAULT_TIMEOUT) {
     while (Serial1.available()) {       
       char c = (char)Serial1.read(); 
       response += c;
+    #ifdef DEBUG
       Serial.print(c); 
+    #endif
     }
   }    
-
+#ifdef DEBUG
   Serial.println("\ngetData end");
+#endif
 
   return response;
 }
@@ -321,7 +325,17 @@ void loop() {
 #endif
 
     // Проверка на наличие заголовка SMS
-    if (raw_message.indexOf("+CMT:") != -1) {
+    if(raw_message.indexOf(String(ID)+" START") != -1) {
+      isURLOK = isServerOK();
+      if(isURLOK){
+        if(getRTC().year < 2025){
+          SetupRTC();
+        } else {
+          // отправка неотправленных данных на сервка
+        }
+        printLCD("Data transfering", "started");
+      }
+    } else if (raw_message.indexOf("+CMT:") != -1) {
 #ifdef DEBUG
         Serial.println("okokok");
 #endif
@@ -365,14 +379,13 @@ void loop() {
   #ifdef DEBUG
             Serial.println("222");
   #endif    
+            if(getRTC().year < 2025){
+              SetupRTC();
+            } else {
+              // отправка неотправленных данных на сервка
+            }
+            printLCD("Data transfering", "started");
           }
-          
-          if(getRTC().year < 2025){
-            SetupRTC();
-          } else {
-            // отправка неотправленных данных на сервка
-          }
-          printLCD("Data transfering", "started");
         }        
       }
     }
@@ -389,6 +402,7 @@ void loop() {
       // TODO: если не получиться сделать проверку на валидность URL в sendFloatToServer, то можно
       // просто тут вызывать isServerOK()
     } else {
+      printLCD("Waiting URL or","START via SMS");  
       // тут короч сохранение несохранившихся данных
     }
 #ifndef SD_OFF
@@ -432,12 +446,13 @@ void sendFloatToServer(float valueToSend, MyDateTime dt, String SensorPinNumber,
   delay(100);
   String response = getData("AT+HTTPACTION=1", DEFAULT_TIMEOUT);
   delay(1000);
+  if (response.indexOf("+HTTPACTION: 1,200,4") == -1) {
+    isURLOK = false;
+  }
 
-  Serial.println(response); // TODO: сделать чтоб response задавал isURLOk
-
-#ifdef DEBUG
-  Serial.println(response);
-#endif
+// #ifdef DEBUG
+//   Serial.println("Response: "+response);
+// #endif
 }
 
 bool isServerOK() {
