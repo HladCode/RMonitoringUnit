@@ -5,6 +5,7 @@
 #include "esp_system.h"
 
 #define DEBUG
+#define NO_SIM_CARD
 //#define SD_OFF
 
 #ifndef SD_OFF
@@ -23,6 +24,7 @@
 #define LED_OFF              LOW
 
 #define thermistor_output1 35
+#define thermistor_output2 34
 // #define SDA_pin 6
  #define SCL_pin 22
 
@@ -206,6 +208,7 @@ void setup() {
   printLCD("AT+CSQ OK");
   sendData("AT+CREG?"); // checking web registration 
   printLCD("AT+CREG? OK");
+#ifndef NO_SIM_CARD
   sendData("AT+CSTT=\"internet.kyivstar.net\",\"\",\"\""); // installing APN
   printLCD("Kyivstar OK");
   sendData("AT+CIICR"); // Raising a wireless connection
@@ -235,6 +238,7 @@ void setup() {
   sendData("AT+HTTPPARA?");
   printLCD("AT+HTTPPARA? OK");
   sendData("AT+CIPRXGET?");
+#endif
 //isSetupAT = 0;
 
 #ifndef SD_OFF
@@ -395,41 +399,43 @@ void loop() {
   if(isRTCOK){
     MyDateTime dt = getRTC();
 
-    String dataPath = "/t(C)/0/"+String(dt.year)+"/"+String(dt.month)+"/"+String(dt.day);
+    //String dataPath = "/t(C)/0/"+String(dt.year)+"/"+String(dt.month)+"/"+String(dt.day);
 
     if(isURLOK){
-      sendFloatToServer(TempreatureFromAdc(analogRead(thermistor_output1)), dt, "35", "t(C)");
-      // TODO: если не получиться сделать проверку на валидность URL в sendFloatToServer, то можно
-      // просто тут вызывать isServerOK()
+      sendFloatToServer(TempreatureFromAdc(analogRead(thermistor_output1)), dt, "35"); // TODO: сделать отправление всех измерений одним пакетом
     } else {
-      printLCD("Waiting URL or","START via SMS");  
-      // тут короч сохранение несохранившихся данных
+      File d2 = SD.open("/unsended_data.txt", FILE_APPEND);
+      d2.println("1 "+String(dt.year)+"-"+String(dt.month)+"-"+String(dt.day)+"T"+String(dt.hour)+":"+String(dt.minute)+":"+String(dt.second)+"+03:00 "+String(TempreatureFromAdc(analogRead(thermistor_output1))));
+      d2.println("2 "+String(dt.year)+"-"+String(dt.month)+"-"+String(dt.day)+"T"+String(dt.hour)+":"+String(dt.minute)+":"+String(dt.second)+"+03:00 "+String(TempreatureFromAdc(analogRead(thermistor_output2))));
+      d2.close();
     }
 #ifndef SD_OFF
-    if(!SD.exists(dataPath+"/data.txt")){
-      SD.mkdir("/t(C)");
-      SD.mkdir("/t(C)/0/");
-      SD.mkdir("/t(C)/0/"+String(dt.year));
-      SD.mkdir("/t(C)/0/"+String(dt.year)+"/"+String(dt.month));
-      SD.mkdir(dataPath);
-    }
-    File d1 = SD.open(dataPath+"/data.txt", FILE_APPEND);
-    d1.println(String(dt.hour)+":"+String(dt.minute)+":"+String(dt.second)+" "+String(TempreatureFromAdc(analogRead(thermistor_output1))));
+    // if(!SD.exists(dataPath+"/data.txt")){
+    //   SD.mkdir("/t(C)");
+    //   SD.mkdir("/t(C)/0/");
+    //   SD.mkdir("/t(C)/0/"+String(dt.year));
+    //   SD.mkdir("/t(C)/0/"+String(dt.year)+"/"+String(dt.month));
+    //   SD.mkdir(dataPath);
+    // }
+
+    File d1 = SD.open("/data.txt", FILE_APPEND);
+    d1.println("1 "+String(dt.year)+"-"+String(dt.month)+"-"+String(dt.day)+"T"+String(dt.hour)+":"+String(dt.minute)+":"+String(dt.second)+"+03:00 "+String(TempreatureFromAdc(analogRead(thermistor_output1))));
+    d1.println("2 "+String(dt.year)+"-"+String(dt.month)+"-"+String(dt.day)+"T"+String(dt.hour)+":"+String(dt.minute)+":"+String(dt.second)+"+03:00 "+String(TempreatureFromAdc(analogRead(thermistor_output2))));
     d1.close();
 #endif
   }
 }
 
-void sendFloatToServer(float valueToSend, MyDateTime dt, String SensorPinNumber, String Purpose) {
+void sendFloatToServer(float valueToSend, MyDateTime dt, String SensorPinNumber) { //, String Purpose
   
   // Serial.println("AT+HTTPPARA=\"URL\",\""+URL+"/data\"");
 
   sendData("AT+HTTPPARA=\"URL\",\""+URL+"/data\"", DEFAULT_TIMEOUT, plug);
   String jsonData = "{\"id\":\""+String(ID)+
-  "\",\"p\":\"" + Purpose + 
   "\",\"n\":\""+SensorPinNumber+
-  "\",\"t\":\""+String(dt.year)+" "+String(dt.month)+" "+String(dt.day)+" "+String(dt.hour)+" "+String(dt.minute)+" "+String(dt.second)+
+  "\",\"t\":\""+String(dt.year)+"-"+String(dt.month)+"-"+String(dt.day)+"T"+String(dt.hour)+":"+String(dt.minute)+":"+String(dt.second)+"Z"+
   "\",\"v\":"+String(valueToSend, 2)+"}";
+  // "\",\"p\":\"" + Purpose + 
 
 #ifdef DEBUG
   Serial.println(jsonData);
@@ -448,6 +454,7 @@ void sendFloatToServer(float valueToSend, MyDateTime dt, String SensorPinNumber,
   delay(1000);
   if (response.indexOf("+HTTPACTION: 1,200,4") == -1) {
     isURLOK = false;
+    printLCD("Waiting URL or","START via SMS");  
   }
 
 // #ifdef DEBUG
