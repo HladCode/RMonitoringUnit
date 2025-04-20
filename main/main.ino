@@ -4,8 +4,10 @@
 #include <Regexp.h>
 #include "esp_system.h"
 
+#include <list>
+
 #define DEBUG
-#define NO_SIM_CARD
+//#define NO_SIM_CARD
 //#define SD_OFF
 
 #ifndef SD_OFF
@@ -55,6 +57,10 @@ struct MyDateTime {
 
   MyDateTime(uint16_t y, uint8_t mo, uint8_t d, uint8_t h, uint8_t mi, uint8_t s)
       : year(y), month(mo), day(d), hour(h), minute(mi), second(s) {}
+
+  String toISO8601() {
+    return String(year)+"-"+String(month)+"-"+String(day)+"T"+String(hour)+":"+String(minute)+":"+String(second)+"+03:00";
+  }
 };
 
 void programReset();
@@ -135,7 +141,7 @@ String getData(const String& command, const int timeout = DEFAULT_TIMEOUT) {
 }
 
 void setupModem();
-void sendFloatToServer(float valueToSend, MyDateTime dt, String SensorPinNumber, String Purpose);
+void sendFloatToServer(const std::list<std::pair<String, float>>&  dataToSend, MyDateTime dt);
 float TempreatureFromAdc(const int16_t& thermistor_adc_val);
 
 
@@ -343,7 +349,7 @@ void loop() {
   if (Serial1.available()) {
     String raw_message = Serial1.readString();
 #ifdef DEBUG
-        Serial.println(raw_message);
+        Serial.println(raw_message);// TODO: сделать отправление всех измерений одним пакетом
         for(int i = 0; i < raw_message.length();++i) {
           Serial.print(int(raw_message[i]));
           Serial.print(" ");
@@ -399,7 +405,7 @@ void loop() {
   #ifdef DEBUG
             Serial.println("111");
   #endif
-            SD.remove("/Config.txt"); // TODO: fix config change
+            SD.remove("/Config.txt");
             File myFile = SD.open("/Config.txt", FILE_WRITE);
             myFile.print(String(ID)+" "+URL);
             myFile.close();
@@ -425,47 +431,49 @@ void loop() {
     //String dataPath = "/t(C)/0/"+String(dt.year)+"/"+String(dt.month)+"/"+String(dt.day);
 
     if(isURLOK){
-      sendFloatToServer(TempreatureFromAdc(analogRead(thermistor_output1)), dt, "35"); // TODO: сделать отправление всех измерений одним пакетом
+      std::list<std::pair<String, float>> dataToSend;
+      dataToSend.push_back(std::pair<String, float>("1", TempreatureFromAdc(analogRead(thermistor_output1))));
+      dataToSend.push_back(std::pair<String, float>("2", TempreatureFromAdc(analogRead(thermistor_output1))));
+      sendFloatToServer(dataToSend, dt); // TODO: сделать отправление всех измерений одним пакетом
     } else {
       unsigned long currentMillis_unsended_data = millis();
       if (currentMillis_unsended_data - previousMillis_unsended_data >= interval_unsended_data) {
         previousMillis_unsended_data = currentMillis_unsended_data;
         File d2 = SD.open("/unsended_data.txt", FILE_APPEND);
-        d2.println("1 "+String(dt.year)+"-"+String(dt.month)+"-"+String(dt.day)+"T"+String(dt.hour)+":"+String(dt.minute)+":"+String(dt.second)+"+03:00 "+String(TempreatureFromAdc(analogRead(thermistor_output1))));
-        d2.println("2 "+String(dt.year)+"-"+String(dt.month)+"-"+String(dt.day)+"T"+String(dt.hour)+":"+String(dt.minute)+":"+String(dt.second)+"+03:00 "+String(TempreatureFromAdc(analogRead(thermistor_output2))));
+        d2.println("1 "+dt.toISO8601()+" "+String(TempreatureFromAdc(analogRead(thermistor_output1))));
+        d2.println("2 "+dt.toISO8601()+" "+String(TempreatureFromAdc(analogRead(thermistor_output2))));
         d2.close();
       }
     }
 #ifndef SD_OFF
-    // if(!SD.exists(dataPath+"/data.txt")){
-    //   SD.mkdir("/t(C)");
-    //   SD.mkdir("/t(C)/0/");
-    //   SD.mkdir("/t(C)/0/"+String(dt.year));
-    //   SD.mkdir("/t(C)/0/"+String(dt.year)+"/"+String(dt.month));
-    //   SD.mkdir(dataPath);
-    // }
 
     unsigned long currentMillis_sended_data = millis();
     if (currentMillis_sended_data - previousMillis_sended_data >= interval_sended_data) {
       previousMillis_sended_data = currentMillis_sended_data;
       File d1 = SD.open("/data.txt", FILE_APPEND);
-      d1.println("1 "+String(dt.year)+"-"+String(dt.month)+"-"+String(dt.day)+"T"+String(dt.hour)+":"+String(dt.minute)+":"+String(dt.second)+"+03:00 "+String(TempreatureFromAdc(analogRead(thermistor_output1))));
-      d1.println("2 "+String(dt.year)+"-"+String(dt.month)+"-"+String(dt.day)+"T"+String(dt.hour)+":"+String(dt.minute)+":"+String(dt.second)+"+03:00 "+String(TempreatureFromAdc(analogRead(thermistor_output2))));
+      d1.println("1 "+dt.toISO8601()+" "+String(TempreatureFromAdc(analogRead(thermistor_output1))));
+      d1.println("2 "+dt.toISO8601()+" "+String(TempreatureFromAdc(analogRead(thermistor_output2))));
       d1.close();
     }
 #endif
   }
 }
 
-void sendFloatToServer(float valueToSend, MyDateTime dt, String SensorPinNumber) { //, String Purpose
-  
+void sendFloatToServer(const std::list<std::pair<String, float>>&  dataToSend, MyDateTime dt) { //, String Purpose
   // Serial.println("AT+HTTPPARA=\"URL\",\""+URL+"/data\"");
 
-  sendData("AT+HTTPPARA=\"URL\",\""+URL+"/data\"", DEFAULT_TIMEOUT, plug);
-  String jsonData = "{\"id\":\""+String(ID)+
-  "\",\"n\":\""+SensorPinNumber+
-  "\",\"t\":\""+String(dt.year)+"-"+String(dt.month)+"-"+String(dt.day)+"T"+String(dt.hour)+":"+String(dt.minute)+":"+String(dt.second)+"Z"+
-  "\",\"v\":"+String(valueToSend, 2)+"}";
+  sendData("AT+HTTPPARA=\"URL\",\""+URL+"/sendData\"", DEFAULT_TIMEOUT, plug);
+  String bufJson;
+  for(std::pair<String, float> data : dataToSend) {
+    bufJson += "{\"ID\":\""+String(ID)+
+    "\",\"sID\":"+data.first+
+    ",\"dt\":\""+dt.toISO8601()+
+    "\",\"d\":"+String(data.second, 2)+"},";
+  }
+
+  bufJson.remove(bufJson.length() - 1);
+
+  String jsonData = "{\"AllCurrentData\":["+bufJson+"]}";
   // "\",\"p\":\"" + Purpose + 
 
 #ifdef DEBUG
@@ -483,14 +491,14 @@ void sendFloatToServer(float valueToSend, MyDateTime dt, String SensorPinNumber)
   delay(100);
   String response = getData("AT+HTTPACTION=1", DEFAULT_TIMEOUT);
   delay(1000);
-  if (response.indexOf("+HTTPACTION: 1,200,4") == -1) {
+  if (response.indexOf("+HTTPACTION: 1,200") == -1) {
     isURLOK = false;
     printLCD("Waiting URL or","START via SMS");  
   }
 
-// #ifdef DEBUG
-//   Serial.println("Response: "+response);
-// #endif
+#ifdef DEBUG
+  Serial.println("Response: "+response);
+#endif
 }
 
 bool isServerOK() {
