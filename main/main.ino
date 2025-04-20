@@ -316,7 +316,30 @@ void setup() {
   }
 }
   
+unsigned long previousMillis_isServerOK = 0;
+const unsigned long interval_isServerOK = 3*60000; // сервер будет проверяться +- каждые 3 минуты 
+
+unsigned long previousMillis_unsended_data = 0;
+const unsigned long interval_unsended_data = 5*1000; // неотосланые данные будут отсылаться +- каждые 5 секунд
+
+unsigned long previousMillis_sended_data = 0;
+const unsigned long interval_sended_data = 5*1000; // отосланые данные будут отсылаться +- каждые 5 секунд
+
 void loop() {
+  if(!isURLOK) {
+    unsigned long currentMillis_isServerOK = millis();
+    if (currentMillis_isServerOK - previousMillis_isServerOK >= interval_isServerOK) {
+      previousMillis_isServerOK = currentMillis_isServerOK;
+      if(isServerOK()) {
+        isURLOK = 1;
+        printLCD("Data transfering", "started");  
+        if(!isRTCOK) {
+          SetupRTC();
+        }
+      }
+    }
+  }
+
   if (Serial1.available()) {
     String raw_message = Serial1.readString();
 #ifdef DEBUG
@@ -404,10 +427,14 @@ void loop() {
     if(isURLOK){
       sendFloatToServer(TempreatureFromAdc(analogRead(thermistor_output1)), dt, "35"); // TODO: сделать отправление всех измерений одним пакетом
     } else {
-      File d2 = SD.open("/unsended_data.txt", FILE_APPEND);
-      d2.println("1 "+String(dt.year)+"-"+String(dt.month)+"-"+String(dt.day)+"T"+String(dt.hour)+":"+String(dt.minute)+":"+String(dt.second)+"+03:00 "+String(TempreatureFromAdc(analogRead(thermistor_output1))));
-      d2.println("2 "+String(dt.year)+"-"+String(dt.month)+"-"+String(dt.day)+"T"+String(dt.hour)+":"+String(dt.minute)+":"+String(dt.second)+"+03:00 "+String(TempreatureFromAdc(analogRead(thermistor_output2))));
-      d2.close();
+      unsigned long currentMillis_unsended_data = millis();
+      if (currentMillis_unsended_data - previousMillis_unsended_data >= interval_unsended_data) {
+        previousMillis_unsended_data = currentMillis_unsended_data;
+        File d2 = SD.open("/unsended_data.txt", FILE_APPEND);
+        d2.println("1 "+String(dt.year)+"-"+String(dt.month)+"-"+String(dt.day)+"T"+String(dt.hour)+":"+String(dt.minute)+":"+String(dt.second)+"+03:00 "+String(TempreatureFromAdc(analogRead(thermistor_output1))));
+        d2.println("2 "+String(dt.year)+"-"+String(dt.month)+"-"+String(dt.day)+"T"+String(dt.hour)+":"+String(dt.minute)+":"+String(dt.second)+"+03:00 "+String(TempreatureFromAdc(analogRead(thermistor_output2))));
+        d2.close();
+      }
     }
 #ifndef SD_OFF
     // if(!SD.exists(dataPath+"/data.txt")){
@@ -418,10 +445,14 @@ void loop() {
     //   SD.mkdir(dataPath);
     // }
 
-    File d1 = SD.open("/data.txt", FILE_APPEND);
-    d1.println("1 "+String(dt.year)+"-"+String(dt.month)+"-"+String(dt.day)+"T"+String(dt.hour)+":"+String(dt.minute)+":"+String(dt.second)+"+03:00 "+String(TempreatureFromAdc(analogRead(thermistor_output1))));
-    d1.println("2 "+String(dt.year)+"-"+String(dt.month)+"-"+String(dt.day)+"T"+String(dt.hour)+":"+String(dt.minute)+":"+String(dt.second)+"+03:00 "+String(TempreatureFromAdc(analogRead(thermistor_output2))));
-    d1.close();
+    unsigned long currentMillis_sended_data = millis();
+    if (currentMillis_sended_data - previousMillis_sended_data >= interval_sended_data) {
+      previousMillis_sended_data = currentMillis_sended_data;
+      File d1 = SD.open("/data.txt", FILE_APPEND);
+      d1.println("1 "+String(dt.year)+"-"+String(dt.month)+"-"+String(dt.day)+"T"+String(dt.hour)+":"+String(dt.minute)+":"+String(dt.second)+"+03:00 "+String(TempreatureFromAdc(analogRead(thermistor_output1))));
+      d1.println("2 "+String(dt.year)+"-"+String(dt.month)+"-"+String(dt.day)+"T"+String(dt.hour)+":"+String(dt.minute)+":"+String(dt.second)+"+03:00 "+String(TempreatureFromAdc(analogRead(thermistor_output2))));
+      d1.close();
+    }
 #endif
   }
 }
@@ -516,7 +547,7 @@ void programReset() {
 
     Serial.println("programReset entry: ");
     Serial.println(fail_count);
-    Serial.println(int('3'));
+    Serial.println(int('9'));
     Serial.println("-------------------\n\n");
 
     // Прогама может ошибиться 10 раз
