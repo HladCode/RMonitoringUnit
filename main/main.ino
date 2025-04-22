@@ -7,7 +7,7 @@
 #include <list>
 
 #define DEBUG
-//#define NO_SIM_CARD
+#define NO_SIM_CARD
 //#define SD_OFF
 
 #ifndef SD_OFF
@@ -24,6 +24,9 @@
 #define MODEM_RX 26
 #define LED_ON               HIGH
 #define LED_OFF              LOW
+
+#define DATA_PATH "/data.txt"
+#define UNSENDED_DATA_PATH "/unsended_data.txt"
 
 #define thermistor_output1 35
 #define thermistor_output2 34
@@ -155,9 +158,10 @@ MyDateTime getRTC();
 void SetupRTC();
 
 
-bool createDir(fs::FS &fs, const char *path);
-bool writeFile(fs::FS &fs, const char *path, const char *message);
-bool appendFile(fs::FS &fs, const char *path, const char *message);
+// bool createDir(fs::FS &fs, const char *path);
+// bool writeFile(fs::FS &fs, const char *path, const char *message);
+// bool appendFile(fs::FS &fs, const char *path, const char *message);
+void deleteFirstDataRows();
 
 bool isURLOK = 0;
 bool isRTCOK = 0;
@@ -320,6 +324,12 @@ void setup() {
   } else {
     printLCD("Waiting URL via","SMS (user app)");  
   }
+
+  // Serial.println("Bytes: ");
+  //   Serial.println(SD.usedBytes() / (1024 * 1024));
+  //   Serial.println(SD.totalBytes() / (1024 * 1024) * 0.75);
+  //   Serial.println(SD.totalBytes() / (1024 * 1024));
+  //   Serial.println("\n");
 }
   
 unsigned long previousMillis_isServerOK = 0;
@@ -430,6 +440,10 @@ void loop() {
 
     //String dataPath = "/t(C)/0/"+String(dt.year)+"/"+String(dt.month)+"/"+String(dt.day);
 
+    if(SD.usedBytes() > SD.totalBytes()*0.75) {
+      deleteFirstDataRows();
+    }
+
     if(isURLOK){
       std::list<std::pair<String, float>> dataToSend;
       dataToSend.push_back(std::pair<String, float>("1", TempreatureFromAdc(analogRead(thermistor_output1))));
@@ -439,23 +453,21 @@ void loop() {
       unsigned long currentMillis_unsended_data = millis();
       if (currentMillis_unsended_data - previousMillis_unsended_data >= interval_unsended_data) {
         previousMillis_unsended_data = currentMillis_unsended_data;
-        File d2 = SD.open("/unsended_data.txt", FILE_APPEND);
+        File d2 = SD.open(UNSENDED_DATA_PATH, FILE_APPEND);
         d2.println("1 "+dt.toISO8601()+" "+String(TempreatureFromAdc(analogRead(thermistor_output1))));
         d2.println("2 "+dt.toISO8601()+" "+String(TempreatureFromAdc(analogRead(thermistor_output2))));
         d2.close();
       }
     }
-#ifndef SD_OFF
 
     unsigned long currentMillis_sended_data = millis();
     if (currentMillis_sended_data - previousMillis_sended_data >= interval_sended_data) {
       previousMillis_sended_data = currentMillis_sended_data;
-      File d1 = SD.open("/data.txt", FILE_APPEND);
+      File d1 = SD.open(DATA_PATH, FILE_APPEND);
       d1.println("1 "+dt.toISO8601()+" "+String(TempreatureFromAdc(analogRead(thermistor_output1))));
       d1.println("2 "+dt.toISO8601()+" "+String(TempreatureFromAdc(analogRead(thermistor_output2))));
       d1.close();
     }
-#endif
   }
 }
 
@@ -473,6 +485,52 @@ void sendFloatToServer(const std::list<std::pair<String, float>>&  dataToSend, M
 
   bufJson.remove(bufJson.length() - 1);
 
+  String jsonData = "{\"AllCurrentData\":["+bufJson+"]}";
+  // "\",\"p\":\"" + Purpose + 
+
+#ifdef DEBUG
+  Serial.println(jsonData);
+  // Serial.println(jsonData.length());
+#endif
+
+  delay(100);
+  Serial.println(getData("AT+HTTPDATA=" + String(jsonData.length()) + ",10000\r\n"));
+
+  delay(100);
+  Serial1.print(jsonData);
+  delay(100);
+  Serial1.write(26); // Ctrl+Z in ASCII
+  delay(100);
+  String response = getData("AT+HTTPACTION=1", DEFAULT_TIMEOUT);
+  delay(1000);
+  if (response.indexOf("+HTTPACTION: 1,200") == -1) {
+    isURLOK = false;
+    printLCD("Waiting URL or","START via SMS");  
+  }
+
+#ifdef DEBUG
+  Serial.println("Response: "+response);
+#endif
+}
+
+void sendUnsendedDataToServer() { //, String Purpose
+  // Serial.println("AT+HTTPPARA=\"URL\",\""+URL+"/data\"");
+  File d = SD.open(UNSENDED_DATA_PATH, FILE_READ);
+
+  sendData("AT+HTTPPARA=\"URL\",\""+URL+"/sendData\"", DEFAULT_TIMEOUT, plug);
+  String bufJson;
+  while (d.available()) {
+    String line = d.read // TODO: доделать эту залупу
+
+    bufJson += "{\"ID\":\""+String(ID)+
+    "\",\"sID\":"+data.first+
+    ",\"dt\":\""+dt.toISO8601()+
+    "\",\"d\":"+String(data.second, 2)+"},";
+  }
+
+  bufJson.remove(bufJson.length() - 1);
+
+  d.close();
   String jsonData = "{\"AllCurrentData\":["+bufJson+"]}";
   // "\",\"p\":\"" + Purpose + 
 
@@ -725,6 +783,50 @@ void setupModem()
     // Initialize the indicator as an output
     pinMode(LED_GPIO, OUTPUT);
     digitalWrite(LED_GPIO, LED_OFF);
+}
+
+
+bool test = 1;
+void deleteFirstDataRows() {
+  if(test) {
+    test = 0;
+  } else {
+    return;
+  }
+  File original = SD.open(DATA_PATH, FILE_READ);
+  if (!original) {
+    return;
+  }
+
+  // Создаем временный файл
+  File temp = SD.open("/temp.txt", FILE_WRITE);
+  if (!temp) {
+    original.close();
+    return;
+  }
+
+  // Пропускаем первые 100 строк
+  int skippedLines = 0;
+  while (original.available() && skippedLines < 10000) {
+    char c = original.read();
+    if (c == '\n') {
+      skippedLines++;
+    }
+  }
+
+  // Копируем оставшееся содержимое
+  while (original.available()) {
+    temp.write(original.read());
+  }
+
+  original.close();
+  temp.close();
+
+  // Удаляем оригинальный файл
+  SD.remove(DATA_PATH);
+
+  // Переименовываем временный файл
+  SD.rename("/temp.txt", DATA_PATH);
 }
 
 // bool createDir(fs::FS &fs, const char *path) {
