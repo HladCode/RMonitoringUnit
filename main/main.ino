@@ -7,7 +7,12 @@
 #include <list>
 
 #define DEBUG
-#define NO_SIM_CARD
+//#define NO_SIM_CARD
+
+#define TEST_SENDING_UNSEND_DATA 1
+
+#define delay(X) vTaskDelay(X/portTICK_PERIOD_MS); 
+
 //#define SD_OFF
 
 #ifndef SD_OFF
@@ -145,6 +150,8 @@ String getData(const String& command, const int timeout = DEFAULT_TIMEOUT) {
 
 void setupModem();
 void sendFloatToServer(const std::list<std::pair<String, float>>&  dataToSend, MyDateTime dt);
+void sendUnsendedDataToServer();
+void startUnsendedDataToServer();
 float TempreatureFromAdc(const int16_t& thermistor_adc_val);
 
 
@@ -200,7 +207,7 @@ void setup() {
       Serial.println(response);
       if (response.indexOf("OK") >= 0) {
           printLCD("Serial1&AT OK");
-          delay(3000);
+          delay(1000);
       } else {
           printLCD("No OK response");
           delay(3000);
@@ -329,11 +336,11 @@ void setup() {
   //   Serial.println(SD.usedBytes() / (1024 * 1024));
   //   Serial.println(SD.totalBytes() / (1024 * 1024) * 0.75);
   //   Serial.println(SD.totalBytes() / (1024 * 1024));
-  //   Serial.println("\n");
+  //   Serial.println("\n"); 
 }
   
 unsigned long previousMillis_isServerOK = 0;
-const unsigned long interval_isServerOK = 3*60000; // сервер будет проверяться +- каждые 3 минуты 
+const unsigned long interval_isServerOK = 3000; // 3*60000 сервер будет проверяться +- каждые 3 минуты 
 
 unsigned long previousMillis_unsended_data = 0;
 const unsigned long interval_unsended_data = 5*1000; // неотосланые данные будут отсылаться +- каждые 5 секунд
@@ -351,6 +358,8 @@ void loop() {
         printLCD("Data transfering", "started");  
         if(!isRTCOK) {
           SetupRTC();
+        } else {
+          startUnsendedDataToServer();
         }
       }
     }
@@ -374,7 +383,7 @@ void loop() {
         if(getRTC().year < 2025){
           SetupRTC();
         } else {
-          // отправка неотправленных данных на сервка
+          startUnsendedDataToServer();
         }
         printLCD("Data transfering", "started");
       }
@@ -389,7 +398,7 @@ void loop() {
         if(getRTC().year < 2025){
             SetupRTC();
         } else {
-          // отправка неотправленных данных на сервка
+          startUnsendedDataToServer();
         }
         isURLOK ? printLCD("Data transfering", "started") : printLCD("URL BAD");
       } else {
@@ -425,7 +434,7 @@ void loop() {
             if(getRTC().year < 2025){
               SetupRTC();
             } else {
-              // отправка неотправленных данных на сервка
+              startUnsendedDataToServer();
             }
             printLCD("Data transfering", "started");
           }
@@ -435,7 +444,7 @@ void loop() {
   }
 
 
-  if(isRTCOK){
+  if(isRTCOK && !TEST_SENDING_UNSEND_DATA){
     MyDateTime dt = getRTC();
 
     //String dataPath = "/t(C)/0/"+String(dt.year)+"/"+String(dt.month)+"/"+String(dt.day);
@@ -471,7 +480,7 @@ void loop() {
   }
 }
 
-void sendFloatToServer(const std::list<std::pair<String, float>>&  dataToSend, MyDateTime dt) { //, String Purpose
+void sendFloatToServer(const std::list<std::pair<String, float>>&  dataToSend, MyDateTime dt) {
   // Serial.println("AT+HTTPPARA=\"URL\",\""+URL+"/data\"");
 
   sendData("AT+HTTPPARA=\"URL\",\""+URL+"/sendData\"", DEFAULT_TIMEOUT, plug);
@@ -494,7 +503,7 @@ void sendFloatToServer(const std::list<std::pair<String, float>>&  dataToSend, M
 #endif
 
   delay(100);
-  Serial.println(getData("AT+HTTPDATA=" + String(jsonData.length()) + ",10000\r\n"));
+  sendData("AT+HTTPDATA=" + String(jsonData.length()) + ",10000\r\n", DEFAULT_TIMEOUT, plug);
 
   delay(100);
   Serial1.print(jsonData);
@@ -502,7 +511,7 @@ void sendFloatToServer(const std::list<std::pair<String, float>>&  dataToSend, M
   Serial1.write(26); // Ctrl+Z in ASCII
   delay(100);
   String response = getData("AT+HTTPACTION=1", DEFAULT_TIMEOUT);
-  delay(1000);
+  //delay(1000);
   if (response.indexOf("+HTTPACTION: 1,200") == -1) {
     isURLOK = false;
     printLCD("Waiting URL or","START via SMS");  
@@ -513,50 +522,83 @@ void sendFloatToServer(const std::list<std::pair<String, float>>&  dataToSend, M
 #endif
 }
 
-void sendUnsendedDataToServer() { //, String Purpose
-  // Serial.println("AT+HTTPPARA=\"URL\",\""+URL+"/data\"");
-  File d = SD.open(UNSENDED_DATA_PATH, FILE_READ);
-
+void sendUnsendedDataToServer(void *pvParameters) { 
   sendData("AT+HTTPPARA=\"URL\",\""+URL+"/sendData\"", DEFAULT_TIMEOUT, plug);
-  String bufJson;
-  while (d.available()) {
-    String line = d.read // TODO: доделать эту залупу
+  String bufJson; 
+  String jsonData;
+  bufJson.reserve(530);
+  jsonData.reserve(630);
+  while (true) {
+    File d = SD.open(UNSENDED_DATA_PATH, FILE_READ);
+    if(!d.available()) {
+      break;
+    }
+    while (d.available() && strlen(bufJson.c_str()) < 490) { // bufJson must be slightly bigger than 490 bytes
+      String sID = d.readStringUntil(' '); 
+      String dt = d.readStringUntil(' '); 
+      String v = d.readStringUntil('\n'); 
 
-    bufJson += "{\"ID\":\""+String(ID)+
-    "\",\"sID\":"+data.first+
-    ",\"dt\":\""+dt.toISO8601()+
-    "\",\"d\":"+String(data.second, 2)+"},";
+      bufJson += "{\"ID\":\""+String(ID)+
+      "\",\"sID\":"+ sID +
+      ",\"dt\":\""+ dt +
+      "\",\"d\":"+v+"},";
+    }
+  
+    bufJson.remove(bufJson.length() - 1);
+
+    jsonData = "{\"AllCurrentData\":["+bufJson+"]}"; // 21 byte without bufJson + 490 with
+
+  #ifdef DEBUG
+    Serial.println(jsonData);
+    Serial.printf("Free stack: %u bytes\n", uxTaskGetStackHighWaterMark(NULL));
+  #endif
+
+    d.close();
+
+    vTaskDelay(100/portTICK_PERIOD_MS);
+    sendData("AT+HTTPDATA=" + String(jsonData.length()) + ",10000\r\n",DEFAULT_TIMEOUT, plug);
+
+    vTaskDelay(100/portTICK_PERIOD_MS);
+    Serial1.print(jsonData);
+    vTaskDelay(100/portTICK_PERIOD_MS);
+    Serial1.write(26); // Ctrl+Z in ASCII
+    vTaskDelay(100/portTICK_PERIOD_MS);
+    getData("AT+HTTPACTION=1", DEFAULT_TIMEOUT);
+    String response = getData("AT+HTTPREAD");
+    //vTaskDelay(1000/portTICK_PERIOD_MS);
+    Serial.println(" ----- Response: "+response);
+    if (response.indexOf("GOOD") >= 0) {
+      isURLOK = false;
+      printLCD("Waiting URL or","START via SMS"); 
+      d.close();
+      vTaskDelete(NULL);
+      return; 
+    }
+    #ifdef DEBUG
+      Serial.println("Response: "+response);
+    #endif
+    bufJson = "";
+    jsonData = "";
+
+    vTaskDelay(50 / portTICK_PERIOD_MS);
   }
-
-  bufJson.remove(bufJson.length() - 1);
-
-  d.close();
-  String jsonData = "{\"AllCurrentData\":["+bufJson+"]}";
-  // "\",\"p\":\"" + Purpose + 
-
-#ifdef DEBUG
-  Serial.println(jsonData);
-  // Serial.println(jsonData.length());
-#endif
-
-  delay(100);
-  Serial.println(getData("AT+HTTPDATA=" + String(jsonData.length()) + ",10000\r\n"));
-
-  delay(100);
-  Serial1.print(jsonData);
-  delay(100);
-  Serial1.write(26); // Ctrl+Z in ASCII
-  delay(100);
-  String response = getData("AT+HTTPACTION=1", DEFAULT_TIMEOUT);
-  delay(1000);
-  if (response.indexOf("+HTTPACTION: 1,200") == -1) {
-    isURLOK = false;
-    printLCD("Waiting URL or","START via SMS");  
+  File fileToClear = SD.open(UNSENDED_DATA_PATH, FILE_WRITE);
+  if (fileToClear) {
+    fileToClear.close();
   }
+  vTaskDelete(NULL);
+}
 
-#ifdef DEBUG
-  Serial.println("Response: "+response);
-#endif
+void startUnsendedDataToServer() {
+  xTaskCreatePinnedToCore(
+    sendUnsendedDataToServer,       // Функция задачи
+    "sendUnsendedDataToServer",     // Имя
+    8192,        // Размер стека (в словах, не байтах)
+    NULL,        // Параметры
+    1,           // Приоритет
+    NULL,        // Хэндл задачи (можно NULL)
+    1            // Ядро (0 или 1)
+  );
 }
 
 bool isServerOK() {
