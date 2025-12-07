@@ -1,5 +1,5 @@
 # Refrigerator monitoring unit
-It is a firmware code for ESP32 T-Call GSM/GPRS SIM800H board created using C++ and arduino IDE (first prototype was made with Arduino Leonardo)
+It is a firmware code for refrigerator sensors monitoring via ESP32 T-Call GSM/GPRS SIM800H board created using C++ and arduino IDE (first prototype was made with Arduino Leonardo)
 <br>
 Project is sponsored by Hlad Service.
 <br><br>
